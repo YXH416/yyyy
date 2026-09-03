@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "wifi_mode": "AP",
+  "ssid": "YAHBOOM-K230",
+  "password": "12345678",
+  "connect_timeout_s": 15,
+  "stream_width": 512,
+  "stream_height": 288,
+  "stream_fps": 10,
+  "bitrate_kbps": 600,
+  "rtsp_port": 8554,
+  "rtsp_session": "video"
+}
+
+
