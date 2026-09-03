@@ -12,18 +12,18 @@
 当前MSPM0入口为 `mspm0/empty.c`，构建标识：
 
 ```text
-ROUND-032_PERSISTENT_22_40_FRAME_V1
+ROUND-034_FIREWATER_SERIAL_V1
 ```
 
-运行流程：固定零位/降级零位 -> +31° -> 等10秒 ->
-中心到远离电机+5cm再到靠近电机-5cm -> 最终位置验证1秒 ->
-等待15秒锁存当前小球位置 -> 长期视觉保持。
+当前为视觉标定与手动角度实验平台：上电不自动运动，VOFA FireWater每20ms显示球位置、球速度、电机目标角和实际角。通过UART0发送CAL、ANGLE、STOP等命令。
 
-长期保持只在锁存任意位置后启用：连续两个K230新帧超过约0.5cm偏差时，按方向使用22°或40°有界脉冲，最多120ms后回32°观察。任务一仍使用原24°到40°控制范围。
+完整接线、命令和实验步骤见 [实验说明](mspm0/EXPERIMENT_STEP1.md)。
 
 ## CCS使用
 
-在CCS中导入 `mspm0/` 工程。生成文件应留在 `Debug/`，不会提交到Git。确保工程只编译一份 `Control/closed_loop.c`，并把新增的视觉轨迹和远程按键 `.c` 文件加入构建。
+在CCS中导入 mspm0 工程。生成文件留在 Debug/，不会提交到Git。确保每个模块仅编译一份，新增的 Control/experiment_protocol.c 和 Hardware/experiment_console.c 必须参与编译。旧视觉轨迹及远程模块不由当前入口调用。
+
+本机可运行 tools/build_firmware.ps1 完整生成和编译固件。
 
 ## Git约定
 
