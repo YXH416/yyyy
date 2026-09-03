@@ -1,8 +1,8 @@
-"""Three-channel LCD + traditional vision + RTSP pipeline (MOD-032).
+"""LCD + traditional vision with optional RTSP (ROUND-035 fast boot).
 
 Channel ownership:
   CH0: 640x480 YUV420SP -> LCD VIDEO1 background
-  CH1: 512x288 YUV420SP -> H.264 / RTSP
+  CH1: optional H.264 / RTSP; not configured in fast-boot mode
   CH2: 320x240 RGB565   -> traditional image.find_blobs()
 
 The initialization order follows the working Yahboom/Canaan media examples:
@@ -13,19 +13,12 @@ Encoder/RTSP, then run Sensor.
 import gc
 import os
 import time
+from runtime_options import WIRELESS_STREAM_ENABLED
 
 import image
 from media.display import *
 from media.media import *
 from media.sensor import *
-
-try:
-    from wifi_rtsp import WifiRtsp
-    _STREAM_IMPORT_ERROR = None
-except BaseException as stream_import_error:
-    WifiRtsp = None
-    _STREAM_IMPORT_ERROR = str(stream_import_error)
-
 
 class _NullStreamer:
     width = 512
@@ -35,8 +28,11 @@ class _NullStreamer:
     prepared = False
     frame_count = 0
 
+    def __init__(self, reason="fast_boot"):
+        self.reason = reason
+
     def connect_network(self):
-        print("#RTSP disabled reason=import_error:%s" % _STREAM_IMPORT_ERROR)
+        print("#RTSP disabled reason=%s" % self.reason)
         return False
 
     def configure_sensor_channel(self, sensor):
@@ -55,19 +51,31 @@ class _NullStreamer:
         return False
 
     def status_text(self):
-        return "RTSP ERR"
+        return "RTSP OFF" if self.reason == "fast_boot" else "RTSP ERR"
 
     def service_diagnostics(self):
         return False
 
     def diagnostic_lines(self):
         return [
-            "MOD-032 RTSP IMPORT ERROR",
-            str(_STREAM_IMPORT_ERROR)[:58],
+            self.status_text(),
+            self.reason[:58],
         ]
 
     def stop(self):
         pass
+
+
+def _create_streamer():
+    # Avoid importing the networking, video encoder and RTSP dependencies at
+    # all when local vision is requested, even if SD Wi-Fi config says enabled.
+    if not WIRELESS_STREAM_ENABLED:
+        return _NullStreamer()
+    try:
+        from wifi_rtsp import WifiRtsp
+        return WifiRtsp()
+    except BaseException as error:
+        return _NullStreamer("import_error:%s" % error)
 
 
 class BallStreamPipeline:
@@ -95,11 +103,7 @@ class BallStreamPipeline:
         self.osd_img = None
         self.tune_backdrop = None
         self.tune_backdrop_visible = False
-        self.streamer = (
-            WifiRtsp()
-            if WifiRtsp is not None
-            else _NullStreamer()
-        )
+        self.streamer = _create_streamer()
         self.media_initialized = False
         self.display_initialized = False
         self.sensor_running = False
@@ -202,7 +206,7 @@ class BallStreamPipeline:
             print(
                 "#BALL_PIPELINE ready display=%sx%s analysis=%sx%s "
                 "format=RGB565 requested_sensor_fps=%s stream=%s "
-                    "mod=MOD-032"
+                    "build=ROUND-035_FAST_BOOT"
                 % (
                     self.display_size[0],
                     self.display_size[1],
@@ -317,7 +321,8 @@ class BallStreamPipeline:
         return "ON" if self.streamer.active else "OFF"
 
     def _show_startup_status(self):
-        if self.osd_img is None:
+        # Skip the RTSP diagnostic splash and its 500 ms pause in local mode.
+        if not WIRELESS_STREAM_ENABLED or self.osd_img is None:
             return
         try:
             self.osd_img.clear()
@@ -388,5 +393,4 @@ class BallStreamPipeline:
         self.tune_backdrop = None
         self.tune_backdrop_visible = False
         gc.collect()
-
 

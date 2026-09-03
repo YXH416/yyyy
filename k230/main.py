@@ -1,23 +1,25 @@
-"""K230 competition launcher (MOD-032).
+"""K230 competition launcher (ROUND-035 fast boot).
 
 The normal task owns one three-channel camera pipeline:
   CH0 -> local LCD camera background + one traditional-vision ball box
-  CH1 -> clean low-load H.264 / RTSP for a phone or computer
+  CH1 -> optional H.264 / RTSP, disabled by runtime_options by default
   CH2 -> 320x240 RGB565 LAB/blob tracking and MSPM0 UART
 
 Flag priority:
   IDE_DIAGNOSTIC_MODE.flag -> wait for a temporary CanMV IDE script
-  WIFI_AP_DIAGNOSTIC.flag  -> AP + LCD + SD/serial diagnostics only
+  WIFI_AP_DIAGNOSTIC.flag  -> diagnostics only if wireless is enabled
   CAMERA_MODE.flag         -> standalone photo capture
-  otherwise                -> traditional ball tracking + LCD + RTSP
+  otherwise                -> traditional ball tracking + LCD + UART
 
-WIFI_STREAM_MODE.flag is intentionally ignored. Wireless streaming is now
-part of ball_tracker and is configured by wifi_stream_config.json.
+WIRELESS_STREAM_ENABLED is the shared master switch. With it disabled, even
+an old WIFI_AP_DIAGNOSTIC.flag cannot delay vision by starting the network.
+WIFI_STREAM_MODE.flag is intentionally ignored.
 """
 
 import gc
 import os
 import time
+from runtime_options import WIRELESS_STREAM_ENABLED
 
 
 DEFAULT_MODULE = "ball_tracker"
@@ -59,7 +61,10 @@ def main():
             "action=ignored mod=MOD-032"
         )
 
-    if _flag_exists(WIFI_DIAGNOSTIC_FLAG):
+    wifi_diagnostic = _flag_exists(WIFI_DIAGNOSTIC_FLAG)
+    if wifi_diagnostic and not WIRELESS_STREAM_ENABLED:
+        print("#LAUNCHER wifi_diagnostic_flag=ignored reason=wireless_disabled")
+    if wifi_diagnostic and WIRELESS_STREAM_ENABLED:
         module_name = WIFI_DIAGNOSTIC_MODULE
     elif _flag_exists(CAMERA_MODE_FLAG):
         module_name = CAMERA_MODULE
@@ -67,14 +72,15 @@ def main():
         module_name = DEFAULT_MODULE
     # The user's unmodified Yahboom AP example succeeds only when it runs
     # before Sensor/Display/Media imports. Preserve that startup order.
-    if module_name == DEFAULT_MODULE:
+    if module_name == DEFAULT_MODULE and WIRELESS_STREAM_ENABLED:
         try:
             from wifi_bootstrap import start_ap
             start_ap()
         except BaseException as error:
             print("#AP_BOOTSTRAP failed detail=%s mod=MOD-032" % error)
 
-    print("#LAUNCHER module=%s mod=MOD-032" % module_name)
+    print("#LAUNCHER module=%s wireless=%s build=ROUND-035_FAST_BOOT"
+          % (module_name, WIRELESS_STREAM_ENABLED))
 
     program = __import__(module_name)
     entry = getattr(program, "main", None)
@@ -89,5 +95,4 @@ def main():
 if __name__ == "__main__":
     os.exitpoint(os.EXITPOINT_ENABLE)
     main()
-
 
