@@ -7,5 +7,6 @@
   {"source": "mspm0/Hardware/experiment_console.c", "target": "mspm0/Hardware/experiment_console.c"},
   {"source": "mspm0/Hardware/experiment_console.h", "target": "mspm0/Hardware/experiment_console.h"},
   {"source": "mspm0/BALANCE_MEASUREMENT.md", "target": "mspm0/BALANCE_MEASUREMENT.md"},
+  {"source": "mspm0/BALANCE_REFERENCE_RECORD.md", "target": "mspm0/BALANCE_REFERENCE_RECORD.md"},
   {"source": "tools/COPY_INSTRUCTIONS.md", "target": "使用说明.md"}
 ]

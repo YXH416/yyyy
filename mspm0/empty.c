@@ -1,5 +1,5 @@
 /*
- * ROUND-036 -- serial one-degree jog and measured balance reference.
+ * ROUND-037 -- save measured 176.861-degree balance reference.
  * No automatic movement on boot; ANGLE commands explicitly move the motor.
  * PA17 remains a sequential calibration shortcut; PB7 stops the motor.
  */
@@ -15,7 +15,7 @@
 #include <stdio.h>
 #define printf Console_Printf
 
-#define BUILD_ID                         "ROUND-036_BALANCE_MEASUREMENT_V1"
+#define BUILD_ID                         "ROUND-037_BALANCE_176861_V1"
 #define CONTROL_PERIOD_MS                (5U)
 #define K230_FRESH_MS                    (250U)
 #define SCALE_CAPTURE_SAMPLES            (12U)
