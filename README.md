@@ -12,7 +12,7 @@
 当前MSPM0入口为 `mspm0/empty.c`，构建标识：
 
 ```text
-ROUND-037_BALANCE_176861_V1
+ROUND-038_SERIAL_BALANCE_ZERO_V1
 ```
 
 当前为视觉标定与手动角度实验平台：上电不自动运动，VOFA FireWater每20ms显示球位置、球速度、电机目标角和实际角。通过UART0发送CAL、ANGLE、STOP等命令。
@@ -20,6 +20,7 @@ ROUND-037_BALANCE_176861_V1
 通过 JOG,+1 / JOG,-1 微调当前角度，用 CAL,BALANCE 采集实测平衡零点。
 
 已保存用户本机实测平衡参考：绝对PWM角度176.861°，作为电机测量坐标0°；上电不自动运动。
+发送BALANCE,ZERO可主动回到该姿态，STOP可中止。
 
 当前步骤见 [平衡位置测量](mspm0/BALANCE_MEASUREMENT.md)，VOFA接线见 [实验说明](mspm0/EXPERIMENT_STEP1.md)。
 

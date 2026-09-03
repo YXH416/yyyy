@@ -33,6 +33,9 @@ int main(void)
     assert(Feed(&p, "jog,-1\n", 1).type == EXP_JOG_MINUS);
     assert(Feed(&p, "CAL,BALANCE\n", 1).type == EXP_BALANCE_CAL);
     assert(Feed(&p, "BALANCE,SHOW\n", 1).type == EXP_BALANCE_SHOW);
+    Feed(&p, "balance,ze", 0);
+    assert(Feed(&p, "ro\r\n", 1).type == EXP_BALANCE_ZERO);
+    assert(Feed(&p, "BALANCE,ZEROjunk\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "JOG,+10\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "JOG,-1junk\n", 1).type == EXP_INVALID);
     c = Feed(&p, "ANGLE,31.25\n", 1);
