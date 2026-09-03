@@ -29,6 +29,12 @@ int main(void)
     assert(Feed(&p, "CAL,RIGHT\r", 1).type == EXP_RIGHT);
     assert(Feed(&p, "\nCAL,RESET\n", 1).type == EXP_RESET);
     assert(Feed(&p, "\r\n\n", 0).type == EXP_NONE);
+    assert(Feed(&p, "JOG,+1\r\n", 1).type == EXP_JOG_PLUS);
+    assert(Feed(&p, "jog,-1\n", 1).type == EXP_JOG_MINUS);
+    assert(Feed(&p, "CAL,BALANCE\n", 1).type == EXP_BALANCE_CAL);
+    assert(Feed(&p, "BALANCE,SHOW\n", 1).type == EXP_BALANCE_SHOW);
+    assert(Feed(&p, "JOG,+10\n", 1).type == EXP_INVALID);
+    assert(Feed(&p, "JOG,-1junk\n", 1).type == EXP_INVALID);
     c = Feed(&p, "ANGLE,31.25\n", 1);
     assert(c.type == EXP_ANGLE && c.angle_deg == 31.25f);
     assert(Feed(&p, "ANGLE,24\n", 1).type == EXP_ANGLE);

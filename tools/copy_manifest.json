@@ -1,0 +1,11 @@
+[
+  {"source": "mspm0/empty.c", "target": "mspm0/empty.c"},
+  {"source": "mspm0/empty.syscfg", "target": "mspm0/empty.syscfg"},
+  {"source": "mspm0/Control/experiment_protocol.c", "target": "mspm0/Control/experiment_protocol.c"},
+  {"source": "mspm0/Control/experiment_protocol.h", "target": "mspm0/Control/experiment_protocol.h"},
+  {"source": "mspm0/Control/motor_balance_config.h", "target": "mspm0/Control/motor_balance_config.h"},
+  {"source": "mspm0/Hardware/experiment_console.c", "target": "mspm0/Hardware/experiment_console.c"},
+  {"source": "mspm0/Hardware/experiment_console.h", "target": "mspm0/Hardware/experiment_console.h"},
+  {"source": "mspm0/BALANCE_MEASUREMENT.md", "target": "mspm0/BALANCE_MEASUREMENT.md"},
+  {"source": "tools/COPY_INSTRUCTIONS.md", "target": "使用说明.md"}
+]

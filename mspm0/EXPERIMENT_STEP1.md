@@ -1,5 +1,9 @@
 # 第34次修改：VOFA FireWater 串口实验
 
+第36次新增平衡角测量：当前步骤请优先阅读BALANCE_MEASUREMENT.md。
+进入JOG测量模式或加载实测平衡零点后，旧ANGLE命令停用，CH2/CH3改用测量坐标。
+现在只交付源码，请在CCS中自行编译烧录。
+
 固件标识：ROUND-034_FIREWATER_SERIAL_V1。上电停在当前位置，只有 ANGLE 命令会驱动电机；没有任务一、自动归零或球位置 PID。
 K230 程序和 UART2 协议保持现状。
 

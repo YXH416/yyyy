@@ -28,6 +28,10 @@ static ExperimentCommand Parse(char *line)
     else if (strcmp(line, "STREAM,ON") == 0) command.type = EXP_STREAM_ON;
     else if (strcmp(line, "STREAM,OFF") == 0) command.type = EXP_STREAM_OFF;
     else if (strcmp(line, "HELP") == 0) command.type = EXP_HELP;
+    else if (strcmp(line, "JOG,+1") == 0) command.type = EXP_JOG_PLUS;
+    else if (strcmp(line, "JOG,-1") == 0) command.type = EXP_JOG_MINUS;
+    else if (strcmp(line, "CAL,BALANCE") == 0) command.type = EXP_BALANCE_CAL;
+    else if (strcmp(line, "BALANCE,SHOW") == 0) command.type = EXP_BALANCE_SHOW;
     else if (strncmp(line, "ANGLE,", 6) == 0) {
         /* Consume the entire numeric token. NaN/Inf/overflow cannot pass. */
         angle = strtof(line + 6, &end);

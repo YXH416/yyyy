@@ -1,5 +1,5 @@
 /*
- * ROUND-034 -- FireWater acquisition and UART0 experiment commands.
+ * ROUND-036 -- serial one-degree jog and measured balance reference.
  * No automatic movement on boot; ANGLE commands explicitly move the motor.
  * PA17 remains a sequential calibration shortcut; PB7 stops the motor.
  */
@@ -10,11 +10,12 @@
 #include "k230.h"
 #include "motor.h"
 #include "experiment_console.h"
+#include "motor_balance_config.h"
 
 #include <stdio.h>
 #define printf Console_Printf
 
-#define BUILD_ID                         "ROUND-034_FIREWATER_SERIAL_V1"
+#define BUILD_ID                         "ROUND-036_BALANCE_MEASUREMENT_V1"
 #define CONTROL_PERIOD_MS                (5U)
 #define K230_FRESH_MS                    (250U)
 #define SCALE_CAPTURE_SAMPLES            (12U)
@@ -24,6 +25,8 @@
 #define MOTOR_TIMEOUT_MS                (10000U)
 #define FIXED_PWM_REFERENCE_DEG         (49.3f)
 #define INVALID_MEASUREMENT             (-9999.0f)
+#define BALANCE_SAMPLES                 (16U)
+#define BALANCE_SPREAD_DEG              (0.20f)
 
 typedef enum {
     SCALE_WAIT_CENTER = 0,
@@ -191,6 +194,12 @@ static float s_motor_origin_deg, s_motor_target_deg = INVALID_MEASUREMENT;
 static int32_t s_raw_px;
 static float s_pos_mm, s_velocity_mm_s, s_previous_pos_mm;
 static uint32_t s_last_drop_count;
+static uint8_t s_measurement_mode;
+static float s_measurement_start_pwm;
+static uint8_t s_balance_valid = MEASURED_BALANCE_VALID;
+static int32_t s_balance_pwm_mdeg = MEASURED_BALANCE_PWM_MDEG;
+static uint8_t s_balance_collecting, s_balance_samples;
+static float s_balance_first, s_balance_sum, s_balance_min, s_balance_max;
 
 void SysTick_Handler(void) { s_clock_ms++; }
 
@@ -206,12 +215,16 @@ static float WrapDegrees(float angle)
     return angle;
 }
 
-/* Historical experiment angle = absolute PWM angle minus 49.3 degrees.
- * This is motor angle, NOT the physical slope of the pipe. */
+/* The measured balance zero and legacy experiment zero are kept separate.
+ * These are motor angles, NOT physical pipe slope. */
 static float MotorRealAngle(void)
 {
     float pwm;
     if (!Encoder_GetPwmAngle(ENCODER_AXIS_X, &pwm)) return INVALID_MEASUREMENT;
+    if (s_balance_valid)
+        return WrapDegrees(pwm - (float)s_balance_pwm_mdeg * 0.001f);
+    if (s_measurement_mode)
+        return WrapDegrees(pwm - s_measurement_start_pwm);
     return WrapDegrees(pwm - FIXED_PWM_REFERENCE_DEG);
 }
 
@@ -242,6 +255,7 @@ static void StopExperiment(uint32_t now, const char *reason)
 {
     CL_StopAll();
     s_scale.collecting = 0;
+    s_balance_collecting = 0;
     s_motor_target_deg = MotorRealAngle();
     printf("[STOP] ms=%lu reason=%s pulses=STOPPED driver=ENABLED\r\n",
            (unsigned long)now, reason);
@@ -250,7 +264,7 @@ static void StopExperiment(uint32_t now, const char *reason)
 static void Capture(ScaleStage_t requested, uint32_t now)
 {
     CL_Snapshot_t motor;
-    if (s_scale.collecting) {
+    if (s_scale.collecting || s_balance_collecting) {
         printf("[ERR] CAL_BUSY wait_for_result\r\n");
         return;
     }
@@ -276,7 +290,11 @@ static void Capture(ScaleStage_t requested, uint32_t now)
 static void CommandAngle(float requested, uint32_t now)
 {
     float actual = MotorRealAngle();
-    if (s_scale.collecting) {
+    if (s_measurement_mode || s_balance_valid) {
+        printf("[ERR] MEASUREMENT_COORDINATES use_JOG_plus1_or_minus1\r\n");
+        return;
+    }
+    if (s_scale.collecting || s_balance_collecting) {
         printf("[ERR] CAL_BUSY angle_not_changed\r\n");
         return;
     }
@@ -309,11 +327,153 @@ static void CommandAngle(float requested, uint32_t now)
            (unsigned long)now, requested, actual);
 }
 
+static uint8_t MeasurementReady(float *pwm)
+{
+    CL_Snapshot_t motor;
+    if (s_scale.collecting || s_balance_collecting) {
+        printf("[ERR] CAL_BUSY wait_or_send_STOP\r\n");
+        return 0;
+    }
+    if (!Encoder_GetPwmAngle(ENCODER_AXIS_X, pwm)) {
+        printf("[ERR] PWM_INVALID measurement_not_started\r\n");
+        return 0;
+    }
+    CL_GetSnapshot(MOTOR_AXIS_X, &motor);
+    if (motor.fault != CL_FAULT_NONE) {
+        printf("[ERR] MOTOR_FAULT inspect_STATUS_and_hardware\r\n");
+        return 0;
+    }
+    if (Motor_IsBusy(MOTOR_AXIS_X) || (motor.active && !motor.reached)) {
+        printf("[ERR] MOTOR_MOVING wait_until_reached_before_next_step\r\n");
+        return 0;
+    }
+    return 1;
+}
+
+static void EnterMeasurement(float pwm)
+{
+    if (!s_measurement_mode) {
+        s_measurement_start_pwm = pwm;
+        s_measurement_mode = 1;
+        s_motor_reference_valid = 0;
+        printf("[MEASURE] origin_pwm_deg=%.3f saved_balance=%u boot_pose_unchanged=1\r\n",
+               pwm, (unsigned)s_balance_valid);
+    }
+    if (!s_motor_reference_valid) {
+        CL_SetZero(MOTOR_AXIS_X);
+        s_motor_origin_deg = s_balance_valid ?
+            WrapDegrees(pwm - (float)s_balance_pwm_mdeg * 0.001f) :
+            WrapDegrees(pwm - s_measurement_start_pwm);
+        s_motor_target_deg = s_motor_origin_deg;
+        s_motor_reference_valid = 1;
+    }
+}
+
+static void JogOneDegree(float delta, uint32_t now)
+{
+    float pwm, actual, requested, requested_pwm;
+    if (!MeasurementReady(&pwm)) return;
+    EnterMeasurement(pwm);
+    actual = MotorRealAngle();
+    if (actual == INVALID_MEASUREMENT) return;
+    requested = actual + delta;
+    if (requested <= -180.0f || requested >= 180.0f) {
+        printf("[ERR] JOG_CROSSES_COORDINATE_WRAP\r\n");
+        return;
+    }
+    if (CL_SetTargetAngle(MOTOR_AXIS_X, requested - s_motor_origin_deg) != MOTOR_OK) {
+        printf("[ERR] JOG_REJECTED\r\n");
+        return;
+    }
+    s_motor_target_deg = requested;
+    s_motor_command_ms = now;
+    requested_pwm = pwm + delta;
+    if (requested_pwm < 0.0f) requested_pwm += 360.0f;
+    if (requested_pwm >= 360.0f) requested_pwm -= 360.0f;
+    printf("[JOG] ms=%lu delta_deg=%.1f from_pwm_deg=%.3f "
+           "target_pwm_deg=%.3f target_relative_deg=%.3f\r\n",
+           (unsigned long)now, delta, pwm, requested_pwm, requested);
+}
+
+static void PrintBalance(void)
+{
+    if (!s_balance_valid) {
+        printf("[BALANCE] valid=0 find_balance_then_send_CAL_BALANCE\r\n");
+        return;
+    }
+    printf("[BALANCE] valid=1 pwm_mdeg=%ld pwm_abs_deg=%.3f "
+           "motor_relative_deg=%.3f\r\n",
+           (long)s_balance_pwm_mdeg, (float)s_balance_pwm_mdeg * 0.001f,
+           MotorRealAngle());
+    printf("[COPY_TO_CODE] #define MEASURED_BALANCE_VALID (1U)\r\n");
+    printf("[COPY_TO_CODE] #define MEASURED_BALANCE_PWM_MDEG (%ldL)\r\n",
+           (long)s_balance_pwm_mdeg);
+}
+
+static void StartBalanceCapture(uint32_t now)
+{
+    float pwm;
+    if (!MeasurementReady(&pwm)) return;
+    EnterMeasurement(pwm);
+    /* Keep driver holding torque; freeze correction pulses during measurement. */
+    CL_StopAll();
+    s_balance_collecting = 1;
+    s_balance_samples = 0;
+    s_balance_sum = 0;
+    s_balance_min = 0;
+    s_balance_max = 0;
+    s_motor_target_deg = MotorRealAngle();
+    printf("[BALANCE] ms=%lu event=SAMPLING samples=16 period_ms=20 "
+           "physical_balance_confirmed_by=USER\r\n", (unsigned long)now);
+}
+
+static void BalanceSample20ms(uint32_t now)
+{
+    float pwm, delta, mean;
+    int32_t qei;
+    if (!s_balance_collecting) return;
+    if (!Encoder_GetPwmAngle(ENCODER_AXIS_X, &pwm)) {
+        s_balance_collecting = 0;
+        printf("[ERR] BALANCE_PWM_LOST repeat_CAL_BALANCE\r\n");
+        return;
+    }
+    if (!s_balance_samples) s_balance_first = pwm;
+    /* Average around the first sample, including a possible 359.99/0.01 wrap. */
+    delta = WrapDegrees(pwm - s_balance_first);
+    s_balance_sum += delta;
+    if (delta < s_balance_min) s_balance_min = delta;
+    if (delta > s_balance_max) s_balance_max = delta;
+    if (++s_balance_samples < BALANCE_SAMPLES) return;
+    s_balance_collecting = 0;
+    if (s_balance_max - s_balance_min > BALANCE_SPREAD_DEG) {
+        printf("[ERR] BALANCE_UNSTABLE spread_deg=%.3f repeat_CAL_BALANCE\r\n",
+               s_balance_max - s_balance_min);
+        return;
+    }
+    mean = s_balance_first + s_balance_sum / BALANCE_SAMPLES;
+    if (mean < 0.0f) mean += 360.0f;
+    if (mean >= 360.0f) mean -= 360.0f;
+    s_balance_pwm_mdeg = (int32_t)(mean * 1000.0f + 0.5f);
+    if (s_balance_pwm_mdeg >= 360000) s_balance_pwm_mdeg = 0;
+    s_balance_valid = 1;
+    qei = Encoder_GetCount(ENCODER_AXIS_X);
+    /* The display zero changed. Rebase the inner-loop offset on the next jog. */
+    CL_StopAll();
+    s_motor_reference_valid = 0;
+    s_motor_target_deg = MotorRealAngle();
+    printf("[BALANCE] ms=%lu event=SAVED_RAM pwm_mdeg=%ld qei_count=%ld "
+           "spread_deg=%.3f source_code_update=PENDING\r\n",
+           (unsigned long)now, (long)s_balance_pwm_mdeg, (long)qei,
+           s_balance_max - s_balance_min);
+    PrintBalance();
+}
+
 static void PrintHelp(void)
 {
     /* Log lines contain no CSV numeric lists; only ball: lines make curves. */
     printf("[HELP] CAL,CENTER | CAL,LEFT | CAL,RIGHT | CAL,RESET\r\n");
     printf("[HELP] ANGLE,31 (24..40 deg) | STOP | STATUS | HELP\r\n");
+    printf("[HELP] JOG,+1 | JOG,-1 | CAL,BALANCE | BALANCE,SHOW\r\n");
     printf("[HELP] STREAM,ON | STREAM,OFF ; commands_end_in_LF_or_CRLF\r\n");
     printf("[HELP] CH0=position_mm CH1=velocity_mm_s CH2=motor_cmd_deg "
            "CH3=motor_real_deg period_ms=20 invalid=-9999\r\n");
@@ -332,8 +492,12 @@ static void HandleCommand(ExperimentCommand command, uint32_t now)
         printf("[CAL] RESET next=CENTER\r\n");
         break;
     case EXP_ANGLE: CommandAngle(command.angle_deg, now); break;
+    case EXP_JOG_PLUS: JogOneDegree(1.0f, now); break;
+    case EXP_JOG_MINUS: JogOneDegree(-1.0f, now); break;
+    case EXP_BALANCE_CAL: StartBalanceCapture(now); break;
+    case EXP_BALANCE_SHOW: PrintBalance(); break;
     case EXP_STOP: StopExperiment(now, "COMMAND"); break;
-    case EXP_STATUS: PrintStatus(now); break;
+    case EXP_STATUS: PrintStatus(now); PrintBalance(); break;
     case EXP_STREAM_ON: s_stream = 1; printf("[STREAM] ON\r\n"); break;
     case EXP_STREAM_OFF: s_stream = 0; printf("[STREAM] OFF\r\n"); break;
     case EXP_HELP: PrintHelp(); break;
@@ -399,6 +563,7 @@ int main(void)
     printf("[BOOT] BUILD_ID=%s auto_motion=OFF uart0=115200_8N1 "
            "TX=PA10 RX=PA11\r\n", BUILD_ID);
     PrintHelp();
+    PrintBalance();
 
     while (1) {
         K230_CenterData center;
@@ -452,6 +617,7 @@ int main(void)
             last_output += TELEMETRY_PERIOD_MS;
             /* Do not burst old samples after a scheduler overrun. */
             if (now - last_output >= TELEMETRY_PERIOD_MS) last_output = now;
+            BalanceSample20ms(now);
             if (s_stream) {
                 uint8_t valid = s_scale.valid && fresh;
                 printf("ball:%.2f,%.2f,%.2f,%.2f\r\n",
