@@ -40,6 +40,10 @@ int main(void)
     assert(Feed(&p, "BREAKAWAY,NEG\r\n", 1).type == EXP_BREAKAWAY_NEG);
     assert(Feed(&p, "BREAKAWAY,STATUS\n", 1).type == EXP_BREAKAWAY_STATUS);
     assert(Feed(&p, "BREAKAWAY,+\n", 1).type == EXP_INVALID);
+    assert(Feed(&p, "fault,clear\n", 1).type == EXP_FAULT_CLEAR);
+    assert(Feed(&p, "SINE,START\r\n", 1).type == EXP_SINE_START);
+    assert(Feed(&p, "SINE,STATUS\n", 1).type == EXP_SINE_STATUS);
+    assert(Feed(&p, "SINE,1.0\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "JOG,+10\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "JOG,-1junk\n", 1).type == EXP_INVALID);
     c = Feed(&p, "ANGLE,31.25\n", 1);

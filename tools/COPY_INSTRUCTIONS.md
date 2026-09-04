@@ -1,4 +1,4 @@
-# 当前复制包：ROUND-040 修复到位后误超时
+# 当前复制包：ROUND-041 PWM反馈与1 Hz单频正弦
 
 固定目录“待复制文件”每轮更新覆盖，不含可烧录文件。
 
@@ -11,7 +11,9 @@ empty.c放工程根目录，Control和Hardware中的文件放进对应目录，�
 发送BALANCE,ZERO（末尾加换行）后，才会主动转到平衡零点；STOP可中止。
 完成三点视觉标定后，发BREAKAWAY,POS或BREAKAWAY,NEG自动测启动角；每0.2°保持2秒，速度连续超过5 mm/s达200 ms时记录。
 ROUND-040已修复BALANCE,ZERO显示REACHED后仍被旧10秒计时触发MOTOR_TIMEOUT的问题。如当前已在零点±0.30°内，会直接输出event=REACHED mode=NO_MOTION，不启动运动超时。
-在CCS中Clean后Build并自行烧录。启动角实验步骤见mspm0/BREAKAWAY_MEASUREMENT.md。
+ROUND-041根据fault=DIRECTION以及QEI/PWM符号相反的实测，将重新建零后的电机闭环优先反馈改为PB20绝对PWM。Control/closed_loop.c必须一起覆盖。
+新增FAULT,CLEAR、SINE,START和SINE,STATUS。SINE,START只执行1.0 Hz、±1.3°、8秒的单频正弦，不扫其他频率；球超过±40 mm或电机超过±2°时停止并回零。
+在CCS中Clean后Build并自行烧录。本轮步骤见mspm0/SINE_SWEEP_1HZ.md。
 
 本轮K230没有变化，不用重新复制K230文件。
 这里包含当前入口需要的串口模块依赖，避免漏复制前一轮新增模块。

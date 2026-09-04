@@ -36,6 +36,9 @@ static ExperimentCommand Parse(char *line)
     else if (strcmp(line, "BREAKAWAY,POS") == 0) command.type = EXP_BREAKAWAY_POS;
     else if (strcmp(line, "BREAKAWAY,NEG") == 0) command.type = EXP_BREAKAWAY_NEG;
     else if (strcmp(line, "BREAKAWAY,STATUS") == 0) command.type = EXP_BREAKAWAY_STATUS;
+    else if (strcmp(line, "FAULT,CLEAR") == 0) command.type = EXP_FAULT_CLEAR;
+    else if (strcmp(line, "SINE,START") == 0) command.type = EXP_SINE_START;
+    else if (strcmp(line, "SINE,STATUS") == 0) command.type = EXP_SINE_STATUS;
     else if (strncmp(line, "ANGLE,", 6) == 0) {
         /* Consume the entire numeric token. NaN/Inf/overflow cannot pass. */
         angle = strtof(line + 6, &end);

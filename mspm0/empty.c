@@ -15,7 +15,7 @@
 #include <stdio.h>
 #define printf Console_Printf
 
-#define BUILD_ID                         "ROUND-040_COMMAND_TIMEOUT_FIX_V1"
+#define BUILD_ID                         "ROUND-041_PWM_SINE_1HZ_V1"
 #define CONTROL_PERIOD_MS                (5U)
 #define K230_FRESH_MS                    (250U)
 #define SCALE_CAPTURE_SAMPLES            (12U)
@@ -37,6 +37,17 @@
 #define BREAKAWAY_START_STILL_MS        (500U)
 #define BREAKAWAY_START_MAX_POS_MM      (10.0f)
 #define BREAKAWAY_START_MAX_VEL_MM_S    (3.0f)
+#define SINE_FREQUENCY_HZ               (1.0f)
+#define SINE_AMPLITUDE_DEG              (1.3f)
+#define SINE_DURATION_MS                (8000U)
+#define SINE_POSITION_LIMIT_MM          (40.0f)
+#define SINE_MOTOR_LIMIT_DEG            (2.0f)
+#define SINE_START_STILL_MS             (500U)
+#define SINE_START_MAX_POS_MM           (10.0f)
+#define SINE_START_MAX_VEL_MM_S         (3.0f)
+/* sin/cos of 2*pi*1Hz*5ms, used without libm. */
+#define SINE_STEP_SIN                   (0.031410759f)
+#define SINE_STEP_COS                   (0.999506560f)
 
 typedef enum {
     SCALE_WAIT_CENTER = 0,
@@ -67,6 +78,12 @@ typedef enum {
     BREAKAWAY_MOVING,
     BREAKAWAY_HOLDING
 } BreakawayState_t;
+
+typedef enum {
+    SINE_IDLE = 0,
+    SINE_WAIT_STILL,
+    SINE_RUNNING
+} SineState_t;
 
 static const char *ScaleStageName(ScaleStage_t stage)
 {
@@ -227,6 +244,10 @@ static uint32_t s_breakaway_last_frame_ms;
 static uint8_t s_breakaway_still_active, s_breakaway_fast_active;
 static uint8_t s_breakaway_pos_valid, s_breakaway_neg_valid;
 static float s_breakaway_pos_deg, s_breakaway_neg_deg;
+static SineState_t s_sine_state;
+static uint8_t s_sine_still_active;
+static uint32_t s_sine_state_ms, s_sine_last_step_ms;
+static float s_sine_sin, s_sine_cos;
 
 void SysTick_Handler(void) { s_clock_ms++; }
 
@@ -240,6 +261,16 @@ static float WrapDegrees(float angle)
     while (angle > 180.0f) angle -= 360.0f;
     while (angle < -180.0f) angle += 360.0f;
     return angle;
+}
+
+static const char *FaultName(CL_Fault_t fault)
+{
+    switch (fault) {
+    case CL_FAULT_NONE: return "NONE";
+    case CL_FAULT_NO_ENCODER: return "NO_ENCODER";
+    case CL_FAULT_DIRECTION: return "DIRECTION";
+    default: return "DRIVER";
+    }
 }
 
 /* The measured balance zero and legacy experiment zero are kept separate.
@@ -265,7 +296,8 @@ static void PrintStatus(uint32_t now)
     CL_GetSnapshot(MOTOR_AXIS_X, &motor);
     printf("[STATUS] ms=%lu vision=%u cal=%s sampling=%u raw_px=%ld "
            "pos_mm=%.2f pwm_valid=%u pwm_abs_deg=%.2f motor_deg=%.2f "
-           "cmd_deg=%.2f qei=%ld active=%u reached=%u timeout_armed=%u fault=%u "
+           "cmd_deg=%.2f qei=%ld active=%u reached=%u timeout_armed=%u "
+           "fault=%s fb=%s "
            "parse=%lu dropped=%lu rx_errors=%lu tx_drops=%lu\r\n",
            (unsigned long)now, (unsigned)VisionFresh(now),
            ScaleStageName(s_scale.stage), (unsigned)s_scale.collecting,
@@ -274,7 +306,8 @@ static void PrintStatus(uint32_t now)
            (unsigned)pwm_valid, pwm_valid ? pwm : INVALID_MEASUREMENT,
            MotorRealAngle(), s_motor_target_deg, (long)motor.current_count,
            (unsigned)motor.active, (unsigned)motor.reached,
-           (unsigned)s_motor_timeout_armed, (unsigned)motor.fault,
+           (unsigned)s_motor_timeout_armed, FaultName(motor.fault),
+           (motor.feedback_source == CL_FEEDBACK_PWM) ? "PWM" : "QEI",
            (unsigned long)stats.parse_errors, (unsigned long)stats.dropped_frames,
            (unsigned long)Console_GetRxErrors(), (unsigned long)Console_GetTxDrops());
 }
@@ -288,11 +321,20 @@ static void StopExperiment(uint32_t now, const char *reason)
                (s_breakaway_direction > 0) ? "MOTOR_POS" : "MOTOR_NEG",
                reason, s_breakaway_target_deg);
     }
+    if (s_sine_state != SINE_IDLE) {
+        printf("[SINE_RESULT] ms=%lu result=ABORTED reason=%s "
+               "elapsed_ms=%lu pos_mm=%.2f motor_real_deg=%.3f\r\n",
+               (unsigned long)now, reason,
+               (unsigned long)(now - s_sine_state_ms), s_pos_mm,
+               MotorRealAngle());
+    }
     CL_StopAll();
     s_motor_timeout_armed = 0;
     s_breakaway_state = BREAKAWAY_IDLE;
     s_breakaway_still_active = 0;
     s_breakaway_fast_active = 0;
+    s_sine_state = SINE_IDLE;
+    s_sine_still_active = 0;
     s_balance_zero_pending = 0;
     s_scale.collecting = 0;
     s_balance_collecting = 0;
@@ -304,8 +346,8 @@ static void StopExperiment(uint32_t now, const char *reason)
 static void Capture(ScaleStage_t requested, uint32_t now)
 {
     CL_Snapshot_t motor;
-    if (s_breakaway_state != BREAKAWAY_IDLE) {
-        printf("[ERR] BREAKAWAY_RUNNING send_STOP_first\r\n");
+    if (s_breakaway_state != BREAKAWAY_IDLE || s_sine_state != SINE_IDLE) {
+        printf("[ERR] MOTION_EXPERIMENT_RUNNING send_STOP_first\r\n");
         return;
     }
     if (s_scale.collecting || s_balance_collecting) {
@@ -334,6 +376,10 @@ static void Capture(ScaleStage_t requested, uint32_t now)
 static void CommandAngle(float requested, uint32_t now)
 {
     float actual = MotorRealAngle();
+    if (s_sine_state != SINE_IDLE) {
+        printf("[ERR] SINE_RUNNING send_STOP_first\r\n");
+        return;
+    }
     if (s_measurement_mode || s_balance_valid) {
         printf("[ERR] MEASUREMENT_COORDINATES use_JOG_plus1_or_minus1\r\n");
         return;
@@ -375,8 +421,8 @@ static void CommandAngle(float requested, uint32_t now)
 static uint8_t MeasurementReady(float *pwm)
 {
     CL_Snapshot_t motor;
-    if (s_breakaway_state != BREAKAWAY_IDLE) {
-        printf("[ERR] BREAKAWAY_RUNNING send_STOP_first\r\n");
+    if (s_breakaway_state != BREAKAWAY_IDLE || s_sine_state != SINE_IDLE) {
+        printf("[ERR] MOTION_EXPERIMENT_RUNNING send_STOP_first\r\n");
         return 0;
     }
     if (s_scale.collecting || s_balance_collecting) {
@@ -449,6 +495,7 @@ static void JogOneDegree(float delta, uint32_t now)
 static void ReturnToBalanceZero(uint32_t now)
 {
     float pwm, actual;
+    CL_Snapshot_t feedback;
     if (!s_balance_valid) {
         printf("[ERR] BALANCE_NOT_CALIBRATED use_CAL_BALANCE\r\n");
         return;
@@ -458,6 +505,16 @@ static void ReturnToBalanceZero(uint32_t now)
      * so returning does not accumulate earlier jog/encoder offset error. */
     s_motor_reference_valid = 0;
     EnterMeasurement(pwm);
+    CL_GetSnapshot(MOTOR_AXIS_X, &feedback);
+    if (!feedback.pwm_valid ||
+        feedback.feedback_source != CL_FEEDBACK_PWM) {
+        CL_StopAll();
+        printf("[ERR] BALANCE_ZERO_REQUIRES_PWM_FEEDBACK pwm_valid=%u fb=%s\r\n",
+               (unsigned)feedback.pwm_valid,
+               (feedback.feedback_source == CL_FEEDBACK_PWM) ?
+               "PWM" : "QEI");
+        return;
+    }
     actual = MotorRealAngle();
     if (actual != INVALID_MEASUREMENT &&
         AbsFloat(actual) <= BALANCE_ZERO_TOLERANCE_DEG) {
@@ -768,6 +825,185 @@ static void BreakawayTick(uint32_t now)
     }
 }
 
+static const char *SineStateName(void)
+{
+    if (s_sine_state == SINE_WAIT_STILL) return "WAIT_STILL";
+    if (s_sine_state == SINE_RUNNING) return "RUNNING";
+    return "IDLE";
+}
+
+static void PrintSineStatus(uint32_t now)
+{
+    printf("[SINE_STATUS] ms=%lu state=%s frequency_hz=%.1f "
+           "amplitude_deg=%.1f duration_ms=%u elapsed_ms=%lu "
+           "pos_mm=%.2f cmd_deg=%.3f real_deg=%.3f\r\n",
+           (unsigned long)now, SineStateName(), SINE_FREQUENCY_HZ,
+           SINE_AMPLITUDE_DEG, (unsigned)SINE_DURATION_MS,
+           (unsigned long)((s_sine_state == SINE_RUNNING) ?
+                           (now - s_sine_state_ms) : 0U),
+           s_pos_mm, s_motor_target_deg, MotorRealAngle());
+}
+
+static void ClearMotorFault(uint32_t now)
+{
+    float pwm;
+    CL_Snapshot_t motor;
+    if (s_sine_state != SINE_IDLE ||
+        s_breakaway_state != BREAKAWAY_IDLE) {
+        printf("[ERR] MOTION_EXPERIMENT_RUNNING send_STOP_first\r\n");
+        return;
+    }
+    if (Motor_IsBusy(MOTOR_AXIS_X)) {
+        printf("[ERR] MOTOR_BUSY wait_then_FAULT_CLEAR\r\n");
+        return;
+    }
+    if (!Encoder_GetPwmAngle(ENCODER_AXIS_X, &pwm)) {
+        printf("[ERR] FAULT_CLEAR_REJECTED pwm_valid=0 inspect_PB20_and_GND\r\n");
+        return;
+    }
+    CL_SetZero(MOTOR_AXIS_X);
+    s_motor_timeout_armed = 0;
+    s_balance_zero_pending = 0;
+    s_motor_reference_valid = 0;
+    s_motor_target_deg = MotorRealAngle();
+    CL_GetSnapshot(MOTOR_AXIS_X, &motor);
+    printf("[FAULT] ms=%lu event=CLEARED pwm_abs_deg=%.3f "
+           "fault=%s fb=%s no_motion=1 next=BALANCE_ZERO\r\n",
+           (unsigned long)now, pwm, FaultName(motor.fault),
+           (motor.feedback_source == CL_FEEDBACK_PWM) ? "PWM" : "QEI");
+}
+
+static void FinishSine(uint32_t now, const char *result)
+{
+    float pwm;
+    uint32_t elapsed = (s_sine_state == SINE_RUNNING) ?
+                       now - s_sine_state_ms : 0U;
+    CL_StopAll();
+    s_motor_timeout_armed = 0;
+    s_sine_state = SINE_IDLE;
+    s_sine_still_active = 0;
+    s_motor_target_deg = MotorRealAngle();
+    printf("[SINE_RESULT] ms=%lu result=%s elapsed_ms=%lu pos_mm=%.2f "
+           "vel_mm_s=%.2f motor_real_deg=%.3f action=RETURN_ZERO\r\n",
+           (unsigned long)now, result, (unsigned long)elapsed,
+           s_pos_mm, s_velocity_mm_s, MotorRealAngle());
+    if (Encoder_GetPwmAngle(ENCODER_AXIS_X, &pwm)) {
+        ReturnToBalanceZero(now);
+    } else {
+        printf("[SINE_SAFETY] return_zero=REJECTED reason=PWM_INVALID "
+               "pulses=STOPPED\r\n");
+    }
+}
+
+static void StartSine(uint32_t now)
+{
+    float pwm, actual;
+    CL_Snapshot_t motor;
+    if (!s_balance_valid) {
+        printf("[ERR] SINE_NO_BALANCE_ZERO use_CAL_BALANCE\r\n");
+        return;
+    }
+    if (!s_scale.valid) {
+        printf("[ERR] SINE_NO_VISION_SCALE use_CAL_CENTER_LEFT_RIGHT\r\n");
+        return;
+    }
+    if (!VisionFresh(now)) {
+        printf("[ERR] SINE_VISION_STALE keep_ball_visible\r\n");
+        return;
+    }
+    if (!MeasurementReady(&pwm)) return;
+    actual = MotorRealAngle();
+    if (actual == INVALID_MEASUREMENT) return;
+    if (AbsFloat(actual) > BALANCE_ZERO_TOLERANCE_DEG) {
+        printf("[ERR] SINE_MOTOR_NOT_AT_ZERO actual_deg=%.3f "
+               "send_BALANCE_ZERO\r\n", actual);
+        return;
+    }
+    if (AbsFloat(s_pos_mm) > SINE_START_MAX_POS_MM) {
+        printf("[ERR] SINE_BALL_NOT_CENTERED pos_mm=%.2f limit_mm=%.1f\r\n",
+               s_pos_mm, SINE_START_MAX_POS_MM);
+        return;
+    }
+    s_motor_reference_valid = 0;
+    EnterMeasurement(pwm);
+    CL_GetSnapshot(MOTOR_AXIS_X, &motor);
+    if (!motor.pwm_valid || motor.feedback_source != CL_FEEDBACK_PWM) {
+        CL_StopAll();
+        printf("[ERR] SINE_REQUIRES_PWM_FEEDBACK pwm_valid=%u fb=%s\r\n",
+               (unsigned)motor.pwm_valid,
+               (motor.feedback_source == CL_FEEDBACK_PWM) ? "PWM" : "QEI");
+        return;
+    }
+    s_sine_state = SINE_WAIT_STILL;
+    s_sine_still_active = 0;
+    s_sine_state_ms = now;
+    printf("[SINE] ms=%lu event=ARMED frequency_hz=1.0 amplitude_deg=1.3 "
+           "duration_ms=8000 position_limit_mm=40 motor_limit_deg=2.0 "
+           "fb=PWM waiting_still_ms=500\r\n", (unsigned long)now);
+}
+
+static void SineOnNewVision(uint32_t now)
+{
+    if (s_sine_state == SINE_WAIT_STILL) {
+        if (AbsFloat(s_pos_mm) <= SINE_START_MAX_POS_MM &&
+            AbsFloat(s_velocity_mm_s) <= SINE_START_MAX_VEL_MM_S) {
+            if (!s_sine_still_active) {
+                s_sine_still_active = 1;
+                s_sine_state_ms = now;
+            } else if (now - s_sine_state_ms >= SINE_START_STILL_MS) {
+                s_sine_still_active = 0;
+                s_sine_state = SINE_RUNNING;
+                s_sine_state_ms = now;
+                s_sine_last_step_ms = now;
+                s_sine_sin = 0.0f;
+                s_sine_cos = 1.0f;
+                printf("[SINE] ms=%lu event=STARTED pos_mm=%.2f "
+                       "vel_mm_s=%.2f\r\n", (unsigned long)now,
+                       s_pos_mm, s_velocity_mm_s);
+            }
+        } else {
+            s_sine_still_active = 0;
+        }
+    } else if (s_sine_state == SINE_RUNNING &&
+               AbsFloat(s_pos_mm) > SINE_POSITION_LIMIT_MM) {
+        FinishSine(now, "POSITION_LIMIT");
+    }
+}
+
+static void SineTick(uint32_t now)
+{
+    float actual, next_sin, desired;
+    if (s_sine_state != SINE_RUNNING) return;
+    if (now - s_sine_state_ms >= SINE_DURATION_MS) {
+        FinishSine(now, "COMPLETE");
+        return;
+    }
+    actual = MotorRealAngle();
+    if (actual == INVALID_MEASUREMENT) {
+        StopExperiment(now, "SINE_PWM_LOST");
+        return;
+    }
+    if (AbsFloat(actual) > SINE_MOTOR_LIMIT_DEG) {
+        FinishSine(now, "MOTOR_ANGLE_LIMIT");
+        return;
+    }
+    while (now - s_sine_last_step_ms >= CONTROL_PERIOD_MS) {
+        next_sin = s_sine_sin * SINE_STEP_COS +
+                   s_sine_cos * SINE_STEP_SIN;
+        s_sine_cos = s_sine_cos * SINE_STEP_COS -
+                     s_sine_sin * SINE_STEP_SIN;
+        s_sine_sin = next_sin;
+        s_sine_last_step_ms += CONTROL_PERIOD_MS;
+    }
+    desired = SINE_AMPLITUDE_DEG * s_sine_sin;
+    if (CL_SetTargetAngle(MOTOR_AXIS_X,
+                          desired - s_motor_origin_deg) != MOTOR_OK) {
+        StopExperiment(now, "SINE_TARGET_REJECTED");
+        return;
+    }
+    s_motor_target_deg = desired;
+}
+
 static void PrintHelp(void)
 {
     /* Log lines contain no CSV numeric lists; only ball: lines make curves. */
@@ -776,6 +1012,7 @@ static void PrintHelp(void)
     printf("[HELP] JOG,+1 | JOG,-1 | CAL,BALANCE | BALANCE,SHOW\r\n");
     printf("[HELP] BALANCE,ZERO returns_motor_to_saved_balance_pose\r\n");
     printf("[HELP] BREAKAWAY,POS | BREAKAWAY,NEG | BREAKAWAY,STATUS\r\n");
+    printf("[HELP] FAULT,CLEAR | SINE,START | SINE,STATUS\r\n");
     printf("[HELP] STREAM,ON | STREAM,OFF ; commands_end_in_LF_or_CRLF\r\n");
     printf("[HELP] CH0=position_mm CH1=velocity_mm_s CH2=motor_cmd_deg "
            "CH3=motor_real_deg period_ms=20 invalid=-9999\r\n");
@@ -802,6 +1039,9 @@ static void HandleCommand(ExperimentCommand command, uint32_t now)
     case EXP_BREAKAWAY_POS: StartBreakaway(1, now); break;
     case EXP_BREAKAWAY_NEG: StartBreakaway(-1, now); break;
     case EXP_BREAKAWAY_STATUS: PrintBreakawayStatus(now); break;
+    case EXP_FAULT_CLEAR: ClearMotorFault(now); break;
+    case EXP_SINE_START: StartSine(now); break;
+    case EXP_SINE_STATUS: PrintSineStatus(now); break;
     case EXP_STOP: StopExperiment(now, "COMMAND"); break;
     case EXP_STATUS: PrintStatus(now); PrintBalance(); break;
     case EXP_STREAM_ON: s_stream = 1; printf("[STREAM] ON\r\n"); break;
@@ -898,6 +1138,7 @@ int main(void)
         if (K230_PollCenter(&center)) {
             ReceivePosition(center, now);
             BreakawayOnNewVision(now);
+            SineOnNewVision(now);
         }
         fresh = VisionFresh(now);
         if (fresh != last_fresh) {
@@ -910,6 +1151,8 @@ int main(void)
             s_velocity_mm_s = 0;
             if (s_breakaway_state != BREAKAWAY_IDLE)
                 StopExperiment(now, "BREAKAWAY_VISION_LOST");
+            else if (s_sine_state != SINE_IDLE)
+                FinishSine(now, "VISION_LOST");
         }
 
         if (Console_TakeCommand(&command)) HandleCommand(command, now);
@@ -923,7 +1166,18 @@ int main(void)
                 /* Use the state after CL_Process, not the stale pre-process
                  * snapshot, when retiring or timing out a command. */
                 CL_GetSnapshot(MOTOR_AXIS_X, &motor);
-                if (motor.active && motor.fault != CL_FAULT_NONE) {
+                if (motor.fault != CL_FAULT_NONE &&
+                    (s_motor_timeout_armed || s_balance_zero_pending ||
+                     s_breakaway_state != BREAKAWAY_IDLE ||
+                     s_sine_state != SINE_IDLE)) {
+                    printf("[MOTOR_FAULT] ms=%lu fault=%s fb=%s pwm_valid=%u "
+                           "qei=%ld target=%ld error=%ld\r\n",
+                           (unsigned long)now, FaultName(motor.fault),
+                           (motor.feedback_source == CL_FEEDBACK_PWM) ?
+                           "PWM" : "QEI", (unsigned)motor.pwm_valid,
+                           (long)motor.current_count,
+                           (long)motor.target_count,
+                           (long)motor.error_count);
                     StopExperiment(now, "MOTOR_FAULT");
                 } else if (s_motor_timeout_armed && motor.reached &&
                            !s_balance_zero_pending) {
@@ -940,6 +1194,7 @@ int main(void)
                                "MOTOR_TIMEOUT");
             }
             BreakawayTick(now);
+            SineTick(now);
         }
         if (now - last_output >= TELEMETRY_PERIOD_MS) {
             last_output += TELEMETRY_PERIOD_MS;

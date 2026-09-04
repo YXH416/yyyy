@@ -315,9 +315,13 @@ void CL_SetZero(MotorAxis_t axis)
     if (axis != MOTOR_AXIS_X || s_initialized == 0U) return;
     Motor_Stop(axis);
     Encoder_SetZero(ENCODER_AXIS_X);
-    s_cl.feedback_source = CL_FEEDBACK_QEI;
-    s_cl.pwm_sign = 1;
     CL_CapturePwmZero();
+    /* The installed QEI currently counts upward in both mechanical
+     * directions. Absolute PWM agrees with the observed shaft direction, so
+     * use it as the primary position feedback whenever it is available. */
+    s_cl.feedback_source = s_cl.pwm_zero_valid ?
+                           CL_FEEDBACK_PWM : CL_FEEDBACK_QEI;
+    s_cl.pwm_sign = 1;
     s_cl.target_count = 0;
     s_cl.active = 0U;
     s_cl.reached = 1U;
@@ -414,5 +418,4 @@ void CL_GetSnapshot(MotorAxis_t axis, CL_Snapshot_t *snapshot)
         ENCODER_AXIS_X, &pwm_angle);
     snapshot->pwm_angle_deg = pwm_angle;
 }
-
 
