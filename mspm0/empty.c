@@ -15,7 +15,7 @@
 #include <stdio.h>
 #define printf Console_Printf
 
-#define BUILD_ID                         "ROUND-039_BREAKAWAY_SCAN_V1"
+#define BUILD_ID                         "ROUND-040_COMMAND_TIMEOUT_FIX_V1"
 #define CONTROL_PERIOD_MS                (5U)
 #define K230_FRESH_MS                    (250U)
 #define SCALE_CAPTURE_SAMPLES            (12U)
@@ -207,6 +207,7 @@ static ScaleCalibration_t s_scale;
 static uint32_t s_last_frame_ms, s_motor_command_ms;
 static uint8_t s_have_frame, s_velocity_ready, s_stream = 1U;
 static uint8_t s_motor_reference_valid;
+static uint8_t s_motor_timeout_armed;
 static float s_motor_origin_deg, s_motor_target_deg = INVALID_MEASUREMENT;
 static int32_t s_raw_px;
 static float s_pos_mm, s_velocity_mm_s, s_previous_pos_mm;
@@ -264,7 +265,7 @@ static void PrintStatus(uint32_t now)
     CL_GetSnapshot(MOTOR_AXIS_X, &motor);
     printf("[STATUS] ms=%lu vision=%u cal=%s sampling=%u raw_px=%ld "
            "pos_mm=%.2f pwm_valid=%u pwm_abs_deg=%.2f motor_deg=%.2f "
-           "cmd_deg=%.2f qei=%ld active=%u reached=%u fault=%u "
+           "cmd_deg=%.2f qei=%ld active=%u reached=%u timeout_armed=%u fault=%u "
            "parse=%lu dropped=%lu rx_errors=%lu tx_drops=%lu\r\n",
            (unsigned long)now, (unsigned)VisionFresh(now),
            ScaleStageName(s_scale.stage), (unsigned)s_scale.collecting,
@@ -272,7 +273,8 @@ static void PrintStatus(uint32_t now)
            (s_scale.valid && VisionFresh(now)) ? s_pos_mm : INVALID_MEASUREMENT,
            (unsigned)pwm_valid, pwm_valid ? pwm : INVALID_MEASUREMENT,
            MotorRealAngle(), s_motor_target_deg, (long)motor.current_count,
-           (unsigned)motor.active, (unsigned)motor.reached, (unsigned)motor.fault,
+           (unsigned)motor.active, (unsigned)motor.reached,
+           (unsigned)s_motor_timeout_armed, (unsigned)motor.fault,
            (unsigned long)stats.parse_errors, (unsigned long)stats.dropped_frames,
            (unsigned long)Console_GetRxErrors(), (unsigned long)Console_GetTxDrops());
 }
@@ -287,6 +289,7 @@ static void StopExperiment(uint32_t now, const char *reason)
                reason, s_breakaway_target_deg);
     }
     CL_StopAll();
+    s_motor_timeout_armed = 0;
     s_breakaway_state = BREAKAWAY_IDLE;
     s_breakaway_still_active = 0;
     s_breakaway_fast_active = 0;
@@ -363,6 +366,7 @@ static void CommandAngle(float requested, uint32_t now)
         return;
     }
     s_motor_command_ms = now;
+    s_motor_timeout_armed = 1;
     s_motor_target_deg = requested;
     printf("[ANGLE] ms=%lu target_deg=%.2f actual_deg=%.2f ref_pwm_deg=49.30\r\n",
            (unsigned long)now, requested, actual);
@@ -432,6 +436,7 @@ static void JogOneDegree(float delta, uint32_t now)
     }
     s_motor_target_deg = requested;
     s_motor_command_ms = now;
+    s_motor_timeout_armed = 1;
     s_balance_zero_pending = 0;
     requested_pwm = pwm + delta;
     if (requested_pwm < 0.0f) requested_pwm += 360.0f;
@@ -443,7 +448,7 @@ static void JogOneDegree(float delta, uint32_t now)
 
 static void ReturnToBalanceZero(uint32_t now)
 {
-    float pwm;
+    float pwm, actual;
     if (!s_balance_valid) {
         printf("[ERR] BALANCE_NOT_CALIBRATED use_CAL_BALANCE\r\n");
         return;
@@ -453,12 +458,25 @@ static void ReturnToBalanceZero(uint32_t now)
      * so returning does not accumulate earlier jog/encoder offset error. */
     s_motor_reference_valid = 0;
     EnterMeasurement(pwm);
+    actual = MotorRealAngle();
+    if (actual != INVALID_MEASUREMENT &&
+        AbsFloat(actual) <= BALANCE_ZERO_TOLERANCE_DEG) {
+        CL_StopAll();
+        s_motor_timeout_armed = 0;
+        s_balance_zero_pending = 0;
+        s_motor_target_deg = 0.0f;
+        printf("[BALANCE_ZERO] ms=%lu event=REACHED mode=NO_MOTION "
+               "error_deg=%.3f tolerance_deg=%.2f\r\n",
+               (unsigned long)now, actual, BALANCE_ZERO_TOLERANCE_DEG);
+        return;
+    }
     if (CL_SetTargetAngle(MOTOR_AXIS_X, -s_motor_origin_deg) != MOTOR_OK) {
         printf("[ERR] BALANCE_ZERO_REJECTED\r\n");
         return;
     }
     s_motor_target_deg = 0.0f;
     s_motor_command_ms = now;
+    s_motor_timeout_armed = 1;
     s_balance_zero_pending = 1;
     printf("[BALANCE_ZERO] ms=%lu event=STARTED from_pwm_deg=%.3f "
            "target_pwm_deg=%.3f delta_deg=%.3f\r\n",
@@ -476,12 +494,15 @@ static void VerifyBalanceZero(uint32_t now)
     if (motor.fault != CL_FAULT_NONE || actual == INVALID_MEASUREMENT) {
         StopExperiment(now, "BALANCE_ZERO_FEEDBACK_LOST");
     } else if (motor.reached && AbsFloat(actual) <= BALANCE_ZERO_TOLERANCE_DEG) {
+        /* Reaching zero completes this command. Leave the driver enabled but
+         * stop correction pulses so an old deadline cannot be reactivated by
+         * later one-count feedback jitter. */
+        CL_StopAll();
+        s_motor_timeout_armed = 0;
         s_balance_zero_pending = 0;
         printf("[BALANCE_ZERO] ms=%lu event=REACHED error_deg=%.3f "
                "tolerance_deg=%.2f\r\n",
                (unsigned long)now, actual, BALANCE_ZERO_TOLERANCE_DEG);
-    } else if (now - s_motor_command_ms >= MOTOR_TIMEOUT_MS) {
-        StopExperiment(now, "BALANCE_ZERO_VERIFY_TIMEOUT");
     }
 }
 
@@ -507,6 +528,7 @@ static void StartBalanceCapture(uint32_t now)
     EnterMeasurement(pwm);
     /* Keep driver holding torque; freeze correction pulses during measurement. */
     CL_StopAll();
+    s_motor_timeout_armed = 0;
     s_balance_collecting = 1;
     s_balance_zero_pending = 0;
     s_balance_samples = 0;
@@ -550,6 +572,7 @@ static void BalanceSample20ms(uint32_t now)
     qei = Encoder_GetCount(ENCODER_AXIS_X);
     /* The display zero changed. Rebase the inner-loop offset on the next jog. */
     CL_StopAll();
+    s_motor_timeout_armed = 0;
     s_motor_reference_valid = 0;
     s_motor_target_deg = MotorRealAngle();
     printf("[BALANCE] ms=%lu event=SAVED_RAM pwm_mdeg=%ld qei_count=%ld "
@@ -589,6 +612,7 @@ static void FinishBreakaway(uint32_t now, const char *result,
     float reported = detected ? actual : INVALID_MEASUREMENT;
     int8_t direction = s_breakaway_direction;
     CL_StopAll();
+    s_motor_timeout_armed = 0;
     s_motor_target_deg = actual;
     s_breakaway_state = BREAKAWAY_IDLE;
     s_breakaway_still_active = 0;
@@ -616,6 +640,7 @@ static void CommandBreakawayStep(uint32_t now)
     s_breakaway_target_deg = next;
     s_motor_target_deg = next;
     s_motor_command_ms = now;
+    s_motor_timeout_armed = 1;
     s_breakaway_state = BREAKAWAY_MOVING;
     s_breakaway_state_ms = now;
     s_breakaway_fast_active = 0;
@@ -893,15 +918,27 @@ int main(void)
             CL_GetSnapshot(MOTOR_AXIS_X, &motor);
             if (motor.active && MotorRealAngle() == INVALID_MEASUREMENT) {
                 StopExperiment(now, "PWM_LOST");
-            } else if (motor.active && !motor.reached &&
-                       now - s_motor_command_ms >= MOTOR_TIMEOUT_MS) {
-                StopExperiment(now, "MOTOR_TIMEOUT");
             } else {
                 CL_Process();
-                if (motor.active && CL_GetFault(MOTOR_AXIS_X) != CL_FAULT_NONE)
+                /* Use the state after CL_Process, not the stale pre-process
+                 * snapshot, when retiring or timing out a command. */
+                CL_GetSnapshot(MOTOR_AXIS_X, &motor);
+                if (motor.active && motor.fault != CL_FAULT_NONE) {
                     StopExperiment(now, "MOTOR_FAULT");
+                } else if (s_motor_timeout_armed && motor.reached &&
+                           !s_balance_zero_pending) {
+                    s_motor_timeout_armed = 0;
+                }
             }
             VerifyBalanceZero(now);
+            /* Semantic completion routines above retire their own deadline.
+             * Only a still-armed command can time out. */
+            if (s_motor_timeout_armed &&
+                now - s_motor_command_ms >= MOTOR_TIMEOUT_MS) {
+                StopExperiment(now, s_balance_zero_pending ?
+                               "BALANCE_ZERO_VERIFY_TIMEOUT" :
+                               "MOTOR_TIMEOUT");
+            }
             BreakawayTick(now);
         }
         if (now - last_output >= TELEMETRY_PERIOD_MS) {
