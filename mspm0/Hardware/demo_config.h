@@ -29,7 +29,9 @@
 
 /* �ջ����ں͵�λ�ݲ2����Լ����0.18�ȣ������ȶ�3�β��ж���λ�� */
 #define CL_PERIOD_MS                5U
-#define CL_TOLERANCE_COUNTS         2U
+/* 0.2 degree scans are about 2.2 encoder counts; tolerance 2 would declare
+ * the first point reached without sending a pulse. One count is about 0.09°. */
+#define CL_TOLERANCE_COUNTS         1U
 
 /* ��ʵ��������״δ���������ʱӦʹ��С�Ƕȡ���Ƶ�ʣ���ֹײ��е��λ�� */
 #define DEMO1_STEPS                 (MOTOR_STEPS_PER_REV / 4U)
@@ -50,5 +52,4 @@
 #endif
 
 #endif
-
 

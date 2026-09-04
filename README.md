@@ -12,7 +12,7 @@
 当前MSPM0入口为 `mspm0/empty.c`，构建标识：
 
 ```text
-ROUND-038_SERIAL_BALANCE_ZERO_V1
+ROUND-039_BREAKAWAY_SCAN_V1
 ```
 
 当前为视觉标定与手动角度实验平台：上电不自动运动，VOFA FireWater每20ms显示球位置、球速度、电机目标角和实际角。通过UART0发送CAL、ANGLE、STOP等命令。
@@ -22,7 +22,9 @@ ROUND-038_SERIAL_BALANCE_ZERO_V1
 已保存用户本机实测平衡参考：绝对PWM角度176.861°，作为电机测量坐标0°；上电不自动运动。
 发送BALANCE,ZERO可主动回到该姿态，STOP可中止。
 
-当前步骤见 [平衡位置测量](mspm0/BALANCE_MEASUREMENT.md)，VOFA接线见 [实验说明](mspm0/EXPERIMENT_STEP1.md)。
+本轮新增BREAKAWAY,POS / BREAKAWAY,NEG自动启动角扫描：从平衡零点每次0.2°、每级2秒，以视觉速度绝对值连续超过5 mm/s达200 ms为启动判据。
+
+当前步骤见 [启动角测量](mspm0/BREAKAWAY_MEASUREMENT.md)，VOFA接线见 [实验说明](mspm0/EXPERIMENT_STEP1.md)。
 
 ## CCS使用
 

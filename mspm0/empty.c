@@ -1,5 +1,5 @@
 /*
- * ROUND-038 -- return to the measured balance zero by serial command.
+ * ROUND-039 -- automatic visual breakaway-angle measurement.
  * No automatic movement on boot; ANGLE commands explicitly move the motor.
  * PA17 remains a sequential calibration shortcut; PB7 stops the motor.
  */
@@ -15,7 +15,7 @@
 #include <stdio.h>
 #define printf Console_Printf
 
-#define BUILD_ID                         "ROUND-038_SERIAL_BALANCE_ZERO_V1"
+#define BUILD_ID                         "ROUND-039_BREAKAWAY_SCAN_V1"
 #define CONTROL_PERIOD_MS                (5U)
 #define K230_FRESH_MS                    (250U)
 #define SCALE_CAPTURE_SAMPLES            (12U)
@@ -28,6 +28,15 @@
 #define BALANCE_SAMPLES                 (16U)
 #define BALANCE_SPREAD_DEG              (0.20f)
 #define BALANCE_ZERO_TOLERANCE_DEG      (0.30f)
+#define BREAKAWAY_STEP_DEG              (0.20f)
+#define BREAKAWAY_MAX_ABS_DEG           (3.00f)
+#define BREAKAWAY_HOLD_MS               (2000U)
+#define BREAKAWAY_SPEED_THRESHOLD_MM_S  (5.0f)
+#define BREAKAWAY_SPEED_CONFIRM_MS      (200U)
+#define BREAKAWAY_MAX_FRAME_GAP_MS      (100U)
+#define BREAKAWAY_START_STILL_MS        (500U)
+#define BREAKAWAY_START_MAX_POS_MM      (10.0f)
+#define BREAKAWAY_START_MAX_VEL_MM_S    (3.0f)
 
 typedef enum {
     SCALE_WAIT_CENTER = 0,
@@ -51,6 +60,13 @@ typedef struct {
     uint8_t valid;
     uint32_t capture_start_ms;
 } ScaleCalibration_t;
+
+typedef enum {
+    BREAKAWAY_IDLE = 0,
+    BREAKAWAY_WAIT_STILL,
+    BREAKAWAY_MOVING,
+    BREAKAWAY_HOLDING
+} BreakawayState_t;
 
 static const char *ScaleStageName(ScaleStage_t stage)
 {
@@ -202,6 +218,14 @@ static int32_t s_balance_pwm_mdeg = MEASURED_BALANCE_PWM_MDEG;
 static uint8_t s_balance_collecting, s_balance_samples;
 static float s_balance_first, s_balance_sum, s_balance_min, s_balance_max;
 static uint8_t s_balance_zero_pending;
+static BreakawayState_t s_breakaway_state;
+static int8_t s_breakaway_direction;
+static float s_breakaway_target_deg;
+static uint32_t s_breakaway_state_ms, s_breakaway_fast_since_ms;
+static uint32_t s_breakaway_last_frame_ms;
+static uint8_t s_breakaway_still_active, s_breakaway_fast_active;
+static uint8_t s_breakaway_pos_valid, s_breakaway_neg_valid;
+static float s_breakaway_pos_deg, s_breakaway_neg_deg;
 
 void SysTick_Handler(void) { s_clock_ms++; }
 
@@ -255,7 +279,17 @@ static void PrintStatus(uint32_t now)
 
 static void StopExperiment(uint32_t now, const char *reason)
 {
+    if (s_breakaway_state != BREAKAWAY_IDLE) {
+        printf("[BREAKAWAY_RESULT] ms=%lu result=ABORTED direction=%s "
+               "reason=%s target_deg=%.2f\r\n",
+               (unsigned long)now,
+               (s_breakaway_direction > 0) ? "MOTOR_POS" : "MOTOR_NEG",
+               reason, s_breakaway_target_deg);
+    }
     CL_StopAll();
+    s_breakaway_state = BREAKAWAY_IDLE;
+    s_breakaway_still_active = 0;
+    s_breakaway_fast_active = 0;
     s_balance_zero_pending = 0;
     s_scale.collecting = 0;
     s_balance_collecting = 0;
@@ -267,6 +301,10 @@ static void StopExperiment(uint32_t now, const char *reason)
 static void Capture(ScaleStage_t requested, uint32_t now)
 {
     CL_Snapshot_t motor;
+    if (s_breakaway_state != BREAKAWAY_IDLE) {
+        printf("[ERR] BREAKAWAY_RUNNING send_STOP_first\r\n");
+        return;
+    }
     if (s_scale.collecting || s_balance_collecting) {
         printf("[ERR] CAL_BUSY wait_for_result\r\n");
         return;
@@ -333,6 +371,10 @@ static void CommandAngle(float requested, uint32_t now)
 static uint8_t MeasurementReady(float *pwm)
 {
     CL_Snapshot_t motor;
+    if (s_breakaway_state != BREAKAWAY_IDLE) {
+        printf("[ERR] BREAKAWAY_RUNNING send_STOP_first\r\n");
+        return 0;
+    }
     if (s_scale.collecting || s_balance_collecting) {
         printf("[ERR] CAL_BUSY wait_or_send_STOP\r\n");
         return 0;
@@ -517,6 +559,190 @@ static void BalanceSample20ms(uint32_t now)
     PrintBalance();
 }
 
+static const char *BreakawayStateName(void)
+{
+    switch (s_breakaway_state) {
+    case BREAKAWAY_WAIT_STILL: return "WAIT_STILL";
+    case BREAKAWAY_MOVING: return "MOVING";
+    case BREAKAWAY_HOLDING: return "HOLDING";
+    default: return "IDLE";
+    }
+}
+
+static void PrintBreakawayStatus(uint32_t now)
+{
+    printf("[BREAKAWAY_STATUS] ms=%lu state=%s direction=%s target_deg=%.2f "
+           "pos_result_valid=%u theta_break_pos_deg=%.3f "
+           "neg_result_valid=%u theta_break_neg_deg=%.3f\r\n",
+           (unsigned long)now, BreakawayStateName(),
+           (s_breakaway_direction > 0) ? "MOTOR_POS" :
+           ((s_breakaway_direction < 0) ? "MOTOR_NEG" : "NONE"),
+           s_breakaway_target_deg, (unsigned)s_breakaway_pos_valid,
+           s_breakaway_pos_deg, (unsigned)s_breakaway_neg_valid,
+           s_breakaway_neg_deg);
+}
+
+static void FinishBreakaway(uint32_t now, const char *result,
+                            uint8_t detected)
+{
+    float actual = MotorRealAngle();
+    float reported = detected ? actual : INVALID_MEASUREMENT;
+    int8_t direction = s_breakaway_direction;
+    CL_StopAll();
+    s_motor_target_deg = actual;
+    s_breakaway_state = BREAKAWAY_IDLE;
+    s_breakaway_still_active = 0;
+    s_breakaway_fast_active = 0;
+    printf("[BREAKAWAY_RESULT] ms=%lu result=%s direction=%s "
+           "theta_break_deg=%.3f target_deg=%.2f ball_pos_mm=%.2f "
+           "ball_vel_mm_s=%.2f pulses=STOPPED driver=ENABLED\r\n",
+           (unsigned long)now, result,
+           (direction > 0) ? "MOTOR_POS" : "MOTOR_NEG", reported,
+           s_breakaway_target_deg, s_pos_mm, s_velocity_mm_s);
+}
+
+static void CommandBreakawayStep(uint32_t now)
+{
+    float next = s_breakaway_target_deg +
+                 (float)s_breakaway_direction * BREAKAWAY_STEP_DEG;
+    if (AbsFloat(next) > BREAKAWAY_MAX_ABS_DEG + 0.001f) {
+        FinishBreakaway(now, "NO_START_AT_LIMIT", 0U);
+        return;
+    }
+    if (CL_SetTargetAngle(MOTOR_AXIS_X, next - s_motor_origin_deg) != MOTOR_OK) {
+        StopExperiment(now, "STEP_REJECTED");
+        return;
+    }
+    s_breakaway_target_deg = next;
+    s_motor_target_deg = next;
+    s_motor_command_ms = now;
+    s_breakaway_state = BREAKAWAY_MOVING;
+    s_breakaway_state_ms = now;
+    s_breakaway_fast_active = 0;
+    printf("[BREAKAWAY_STEP] ms=%lu direction=%s target_deg=%.2f "
+           "hold_after_reached_ms=%u\r\n",
+           (unsigned long)now,
+           (s_breakaway_direction > 0) ? "MOTOR_POS" : "MOTOR_NEG",
+           next, (unsigned)BREAKAWAY_HOLD_MS);
+}
+
+static void StartBreakaway(int8_t direction, uint32_t now)
+{
+    float pwm, actual;
+    if (!s_balance_valid) {
+        printf("[ERR] BREAKAWAY_NO_BALANCE_ZERO use_CAL_BALANCE\r\n");
+        return;
+    }
+    if (!s_scale.valid) {
+        printf("[ERR] BREAKAWAY_NO_VISION_SCALE use_CAL_CENTER_LEFT_RIGHT\r\n");
+        return;
+    }
+    if (!VisionFresh(now)) {
+        printf("[ERR] BREAKAWAY_VISION_STALE keep_ball_visible\r\n");
+        return;
+    }
+    if (!MeasurementReady(&pwm)) return;
+    actual = MotorRealAngle();
+    if (actual == INVALID_MEASUREMENT) return;
+    if (AbsFloat(actual) > BALANCE_ZERO_TOLERANCE_DEG) {
+        printf("[ERR] BREAKAWAY_MOTOR_NOT_AT_ZERO actual_deg=%.3f "
+               "tolerance_deg=%.2f send_BALANCE_ZERO\r\n",
+               actual, BALANCE_ZERO_TOLERANCE_DEG);
+        return;
+    }
+    if (AbsFloat(s_pos_mm) > BREAKAWAY_START_MAX_POS_MM) {
+        printf("[ERR] BREAKAWAY_BALL_NOT_CENTERED pos_mm=%.2f limit_mm=%.1f\r\n",
+               s_pos_mm, BREAKAWAY_START_MAX_POS_MM);
+        return;
+    }
+    s_motor_reference_valid = 0;
+    EnterMeasurement(pwm);
+    s_breakaway_direction = direction;
+    s_breakaway_target_deg = 0.0f;
+    s_breakaway_state = BREAKAWAY_WAIT_STILL;
+    s_breakaway_state_ms = now;
+    s_breakaway_still_active = 0;
+    s_breakaway_fast_active = 0;
+    s_breakaway_last_frame_ms = s_last_frame_ms;
+    if (direction > 0) s_breakaway_pos_valid = 0;
+    else s_breakaway_neg_valid = 0;
+    printf("[BREAKAWAY] ms=%lu event=ARMED direction=%s step_deg=%.2f "
+           "hold_ms=%u threshold_mm_s=%.1f confirm_ms=%u max_abs_deg=%.1f "
+           "waiting_still_ms=%u\r\n",
+           (unsigned long)now,
+           (direction > 0) ? "MOTOR_POS" : "MOTOR_NEG",
+           BREAKAWAY_STEP_DEG, (unsigned)BREAKAWAY_HOLD_MS,
+           BREAKAWAY_SPEED_THRESHOLD_MM_S,
+           (unsigned)BREAKAWAY_SPEED_CONFIRM_MS,
+           BREAKAWAY_MAX_ABS_DEG, (unsigned)BREAKAWAY_START_STILL_MS);
+}
+
+/* Called once per newly received K230 position frame. This prevents one old
+ * velocity sample from satisfying the 200 ms confirmation by itself. */
+static void BreakawayOnNewVision(uint32_t now)
+{
+    uint32_t frame_gap = now - s_breakaway_last_frame_ms;
+    s_breakaway_last_frame_ms = now;
+    if (s_breakaway_state == BREAKAWAY_WAIT_STILL) {
+        if (AbsFloat(s_pos_mm) <= BREAKAWAY_START_MAX_POS_MM &&
+            AbsFloat(s_velocity_mm_s) <= BREAKAWAY_START_MAX_VEL_MM_S) {
+            if (!s_breakaway_still_active) {
+                s_breakaway_still_active = 1;
+                s_breakaway_state_ms = now;
+            } else if (now - s_breakaway_state_ms >= BREAKAWAY_START_STILL_MS) {
+                s_breakaway_still_active = 0;
+                printf("[BREAKAWAY] ms=%lu event=BALL_STILL_CONFIRMED "
+                       "pos_mm=%.2f vel_mm_s=%.2f\r\n",
+                       (unsigned long)now, s_pos_mm, s_velocity_mm_s);
+                CommandBreakawayStep(now);
+            }
+        } else {
+            s_breakaway_still_active = 0;
+        }
+        return;
+    }
+    if (s_breakaway_state != BREAKAWAY_MOVING &&
+        s_breakaway_state != BREAKAWAY_HOLDING) return;
+    if (frame_gap > BREAKAWAY_MAX_FRAME_GAP_MS) s_breakaway_fast_active = 0;
+    if (AbsFloat(s_velocity_mm_s) > BREAKAWAY_SPEED_THRESHOLD_MM_S) {
+        if (!s_breakaway_fast_active) {
+            s_breakaway_fast_active = 1;
+            s_breakaway_fast_since_ms = now;
+        } else if (now - s_breakaway_fast_since_ms >=
+                   BREAKAWAY_SPEED_CONFIRM_MS) {
+            float actual = MotorRealAngle();
+            if (s_breakaway_direction > 0) {
+                s_breakaway_pos_deg = actual;
+                s_breakaway_pos_valid = 1;
+            } else {
+                s_breakaway_neg_deg = actual;
+                s_breakaway_neg_valid = 1;
+            }
+            FinishBreakaway(now, "DETECTED", 1U);
+        }
+    } else {
+        s_breakaway_fast_active = 0;
+    }
+}
+
+static void BreakawayTick(uint32_t now)
+{
+    CL_Snapshot_t motor;
+    if (s_breakaway_state == BREAKAWAY_IDLE ||
+        s_breakaway_state == BREAKAWAY_WAIT_STILL) return;
+    CL_GetSnapshot(MOTOR_AXIS_X, &motor);
+    if (s_breakaway_state == BREAKAWAY_MOVING && motor.reached) {
+        s_breakaway_state = BREAKAWAY_HOLDING;
+        s_breakaway_state_ms = now;
+        printf("[BREAKAWAY_STEP] ms=%lu event=REACHED target_deg=%.2f "
+               "actual_deg=%.3f\r\n", (unsigned long)now,
+               s_breakaway_target_deg, MotorRealAngle());
+    } else if (s_breakaway_state == BREAKAWAY_HOLDING &&
+               now - s_breakaway_state_ms >= BREAKAWAY_HOLD_MS) {
+        CommandBreakawayStep(now);
+    }
+}
+
 static void PrintHelp(void)
 {
     /* Log lines contain no CSV numeric lists; only ball: lines make curves. */
@@ -524,6 +750,7 @@ static void PrintHelp(void)
     printf("[HELP] ANGLE,31 (24..40 deg) | STOP | STATUS | HELP\r\n");
     printf("[HELP] JOG,+1 | JOG,-1 | CAL,BALANCE | BALANCE,SHOW\r\n");
     printf("[HELP] BALANCE,ZERO returns_motor_to_saved_balance_pose\r\n");
+    printf("[HELP] BREAKAWAY,POS | BREAKAWAY,NEG | BREAKAWAY,STATUS\r\n");
     printf("[HELP] STREAM,ON | STREAM,OFF ; commands_end_in_LF_or_CRLF\r\n");
     printf("[HELP] CH0=position_mm CH1=velocity_mm_s CH2=motor_cmd_deg "
            "CH3=motor_real_deg period_ms=20 invalid=-9999\r\n");
@@ -547,6 +774,9 @@ static void HandleCommand(ExperimentCommand command, uint32_t now)
     case EXP_BALANCE_CAL: StartBalanceCapture(now); break;
     case EXP_BALANCE_SHOW: PrintBalance(); break;
     case EXP_BALANCE_ZERO: ReturnToBalanceZero(now); break;
+    case EXP_BREAKAWAY_POS: StartBreakaway(1, now); break;
+    case EXP_BREAKAWAY_NEG: StartBreakaway(-1, now); break;
+    case EXP_BREAKAWAY_STATUS: PrintBreakawayStatus(now); break;
     case EXP_STOP: StopExperiment(now, "COMMAND"); break;
     case EXP_STATUS: PrintStatus(now); PrintBalance(); break;
     case EXP_STREAM_ON: s_stream = 1; printf("[STREAM] ON\r\n"); break;
@@ -640,14 +870,22 @@ int main(void)
             s_scale.collecting = 0;
             printf("[ERR] CAL_TIMEOUT_OR_VISION_LOST repeat_current_CAL\r\n");
         }
-        if (K230_PollCenter(&center)) ReceivePosition(center, now);
+        if (K230_PollCenter(&center)) {
+            ReceivePosition(center, now);
+            BreakawayOnNewVision(now);
+        }
         fresh = VisionFresh(now);
         if (fresh != last_fresh) {
             last_fresh = fresh;
             printf("[VISION] ms=%lu fresh=%u\r\n",
                    (unsigned long)now, (unsigned)fresh);
         }
-        if (!fresh) { s_velocity_ready = 0; s_velocity_mm_s = 0; }
+        if (!fresh) {
+            s_velocity_ready = 0;
+            s_velocity_mm_s = 0;
+            if (s_breakaway_state != BREAKAWAY_IDLE)
+                StopExperiment(now, "BREAKAWAY_VISION_LOST");
+        }
 
         if (Console_TakeCommand(&command)) HandleCommand(command, now);
         if (now - last_control >= CONTROL_PERIOD_MS) {
@@ -664,6 +902,7 @@ int main(void)
                     StopExperiment(now, "MOTOR_FAULT");
             }
             VerifyBalanceZero(now);
+            BreakawayTick(now);
         }
         if (now - last_output >= TELEMETRY_PERIOD_MS) {
             last_output += TELEMETRY_PERIOD_MS;

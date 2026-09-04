@@ -36,6 +36,10 @@ int main(void)
     Feed(&p, "balance,ze", 0);
     assert(Feed(&p, "ro\r\n", 1).type == EXP_BALANCE_ZERO);
     assert(Feed(&p, "BALANCE,ZEROjunk\n", 1).type == EXP_INVALID);
+    assert(Feed(&p, "breakaway,pos\n", 1).type == EXP_BREAKAWAY_POS);
+    assert(Feed(&p, "BREAKAWAY,NEG\r\n", 1).type == EXP_BREAKAWAY_NEG);
+    assert(Feed(&p, "BREAKAWAY,STATUS\n", 1).type == EXP_BREAKAWAY_STATUS);
+    assert(Feed(&p, "BREAKAWAY,+\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "JOG,+10\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "JOG,-1junk\n", 1).type == EXP_INVALID);
     c = Feed(&p, "ANGLE,31.25\n", 1);
