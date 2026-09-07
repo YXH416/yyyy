@@ -1,5 +1,5 @@
 /*
- * ROUND-039 -- automatic visual breakaway-angle measurement.
+ * ROUND-043 -- sequenced keyboard manual control around measured balance zero.
  * No automatic movement on boot; ANGLE commands explicitly move the motor.
  * PA17 remains a sequential calibration shortcut; PB7 stops the motor.
  */
@@ -15,7 +15,7 @@
 #include <stdio.h>
 #define printf Console_Printf
 
-#define BUILD_ID                         "ROUND-042_KEYBOARD_MANUAL_V1"
+#define BUILD_ID                         "ROUND-043_KEYBOARD_MANUAL_V2"
 #define CONTROL_PERIOD_MS                (5U)
 #define K230_FRESH_MS                    (250U)
 #define SCALE_CAPTURE_SAMPLES            (12U)
@@ -48,8 +48,18 @@
 /* sin/cos of 2*pi*1Hz*5ms, used without libm. */
 #define SINE_STEP_SIN                   (0.031410759f)
 #define SINE_STEP_COS                   (0.999506560f)
-#define MANUAL_ANGLE_LIMIT_DEG          (2.0f)
-#define MANUAL_ACTUAL_LIMIT_DEG         (2.3f)
+#define MANUAL_ANGLE_LIMIT_DEG          \
+    ((float)MANUAL_COMMAND_LIMIT_MDEG * 0.001f)
+#define MANUAL_MECHANICAL_POS_LIMIT_DEG \
+    ((float)MANUAL_MECHANICAL_POS_LIMIT_MDEG * 0.001f)
+#define MANUAL_MECHANICAL_NEG_LIMIT_DEG \
+    ((float)MANUAL_MECHANICAL_NEG_LIMIT_MDEG * 0.001f)
+#define MANUAL_ACTUAL_POS_LIMIT_DEG      \
+    ((float)(MANUAL_MECHANICAL_POS_LIMIT_MDEG + \
+             MANUAL_ACTUAL_OVERSHOOT_MDEG) * 0.001f)
+#define MANUAL_ACTUAL_NEG_LIMIT_DEG      \
+    ((float)(MANUAL_MECHANICAL_NEG_LIMIT_MDEG + \
+             MANUAL_ACTUAL_OVERSHOOT_MDEG) * 0.001f)
 #define MANUAL_LINK_TIMEOUT_MS          (500U)
 #define MANUAL_POSITION_LIMIT_MM        (60.0f)
 
@@ -254,6 +264,7 @@ static uint32_t s_sine_state_ms, s_sine_last_step_ms;
 static float s_sine_sin, s_sine_cos;
 static uint8_t s_manual_active;
 static uint32_t s_manual_last_rx_ms;
+static uint32_t s_manual_last_sequence;
 
 void SysTick_Handler(void) { s_clock_ms++; }
 
@@ -303,8 +314,12 @@ static void PrintStatus(uint32_t now)
     printf("[STATUS] ms=%lu vision=%u cal=%s sampling=%u raw_px=%ld "
            "pos_mm=%.2f pwm_valid=%u pwm_abs_deg=%.2f motor_deg=%.2f "
            "cmd_deg=%.2f qei=%ld active=%u reached=%u timeout_armed=%u "
-           "fault=%s fb=%s manual=%u "
-           "parse=%lu dropped=%lu rx_errors=%lu tx_drops=%lu\r\n",
+           "fault=%s fb=%s manual=%u pos_valid=%u "
+           "manual_cmd_limit_deg=%.1f manual_mech_pos_deg=%.1f "
+           "manual_mech_neg_deg=%.1f "
+           "manual_limit_confirmed=%u manual_rx_seq=%lu manual_rx_age_ms=%lu "
+           "parse=%lu dropped=%lu rx_errors=%lu rx_overflow=%lu "
+           "rx_bytes=%lu rx_lines=%lu tx_drops=%lu\r\n",
            (unsigned long)now, (unsigned)VisionFresh(now),
            ScaleStageName(s_scale.stage), (unsigned)s_scale.collecting,
            (long)s_raw_px,
@@ -315,8 +330,19 @@ static void PrintStatus(uint32_t now)
            (unsigned)s_motor_timeout_armed, FaultName(motor.fault),
            (motor.feedback_source == CL_FEEDBACK_PWM) ? "PWM" : "QEI",
            (unsigned)s_manual_active,
+           (unsigned)(s_scale.valid && VisionFresh(now)),
+           MANUAL_ANGLE_LIMIT_DEG, MANUAL_MECHANICAL_POS_LIMIT_DEG,
+           MANUAL_MECHANICAL_NEG_LIMIT_DEG,
+           (unsigned)MANUAL_MECHANICAL_LIMIT_CONFIRMED,
+           (unsigned long)s_manual_last_sequence,
+           (unsigned long)(s_manual_active ?
+                           now - s_manual_last_rx_ms : 0U),
            (unsigned long)stats.parse_errors, (unsigned long)stats.dropped_frames,
-           (unsigned long)Console_GetRxErrors(), (unsigned long)Console_GetTxDrops());
+           (unsigned long)Console_GetRxErrors(),
+           (unsigned long)Console_GetRxOverflows(),
+           (unsigned long)Console_GetRxBytes(),
+           (unsigned long)Console_GetRxLines(),
+           (unsigned long)Console_GetTxDrops());
 }
 
 static void StopExperiment(uint32_t now, const char *reason)
@@ -336,8 +362,9 @@ static void StopExperiment(uint32_t now, const char *reason)
                MotorRealAngle());
     }
     if (s_manual_active) {
-        printf("[MANUAL] ms=%lu event=STOPPED reason=%s\r\n",
-               (unsigned long)now, reason);
+        printf("[MANUAL] ms=%lu event=STOPPED reason=%s last_seq=%lu\r\n",
+               (unsigned long)now, reason,
+               (unsigned long)s_manual_last_sequence);
     }
     CL_StopAll();
     s_motor_timeout_armed = 0;
@@ -1018,7 +1045,7 @@ static void SineTick(uint32_t now)
     s_motor_target_deg = desired;
 }
 
-static void StartManual(uint32_t now)
+static void StartManual(uint32_t now, uint32_t sequence)
 {
     float pwm, actual;
     CL_Snapshot_t motor;
@@ -1046,13 +1073,21 @@ static void StartManual(uint32_t now)
     }
     s_manual_active = 1;
     s_manual_last_rx_ms = now;
+    s_manual_last_sequence = sequence;
     s_motor_target_deg = 0.0f;
-    printf("[MANUAL] ms=%lu event=STARTED angle_limit_deg=2.0 "
-           "actual_limit_deg=2.3 link_timeout_ms=500 "
-           "position_limit_mm=60 fb=PWM\r\n", (unsigned long)now);
+    printf("[MANUAL] ms=%lu event=STARTED seq=%lu "
+           "command_limit_deg=%.1f mechanical_pos_deg=%.1f "
+           "mechanical_neg_deg=%.1f mechanical_limit_confirmed=%u "
+           "actual_pos_trip_deg=%.1f actual_neg_trip_deg=%.1f "
+           "link_timeout_ms=500 position_limit_mm=60 fb=PWM\r\n",
+           (unsigned long)now, (unsigned long)sequence,
+           MANUAL_ANGLE_LIMIT_DEG, MANUAL_MECHANICAL_POS_LIMIT_DEG,
+           MANUAL_MECHANICAL_NEG_LIMIT_DEG,
+           (unsigned)MANUAL_MECHANICAL_LIMIT_CONFIRMED,
+           MANUAL_ACTUAL_POS_LIMIT_DEG, MANUAL_ACTUAL_NEG_LIMIT_DEG);
 }
 
-static void ManualAngle(float requested, uint32_t now)
+static void ManualAngle(float requested, uint32_t sequence, uint32_t now)
 {
     float actual;
     if (!s_manual_active) {
@@ -1060,8 +1095,19 @@ static void ManualAngle(float requested, uint32_t now)
         return;
     }
     if (AbsFloat(requested) > MANUAL_ANGLE_LIMIT_DEG) {
-        printf("[ERR] MANUAL_ANGLE_LIMIT requested_deg=%.3f limit_deg=2.0\r\n",
-               requested);
+        printf("[ERR] MANUAL_COMMAND_LIMIT seq=%lu requested_deg=%.3f "
+               "limit_deg=%.1f\r\n", (unsigned long)sequence,
+               requested, MANUAL_ANGLE_LIMIT_DEG);
+        return;
+    }
+    if (requested > MANUAL_MECHANICAL_POS_LIMIT_DEG ||
+        requested < -MANUAL_MECHANICAL_NEG_LIMIT_DEG) {
+        printf("[ERR] MANUAL_MECHANICAL_LIMIT seq=%lu requested_deg=%.3f "
+               "pos_limit_deg=%.1f neg_limit_deg=%.1f confirmed=%u\r\n",
+               (unsigned long)sequence, requested,
+               MANUAL_MECHANICAL_POS_LIMIT_DEG,
+               MANUAL_MECHANICAL_NEG_LIMIT_DEG,
+               (unsigned)MANUAL_MECHANICAL_LIMIT_CONFIRMED);
         return;
     }
     actual = MotorRealAngle();
@@ -1076,15 +1122,19 @@ static void ManualAngle(float requested, uint32_t now)
         return;
     }
     s_manual_last_rx_ms = now;
+    s_manual_last_sequence = sequence;
     s_motor_target_deg = requested;
-    printf("[MANUAL] ms=%lu event=ANGLE target_deg=%.3f "
+    printf("[MANUAL] ms=%lu event=ANGLE seq=%lu target_deg=%.3f "
            "actual_deg=%.3f\r\n", (unsigned long)now,
-           requested, actual);
+           (unsigned long)sequence, requested, actual);
 }
 
-static void ManualHeartbeat(uint32_t now)
+static void ManualHeartbeat(uint32_t sequence, uint32_t now)
 {
-    if (s_manual_active) s_manual_last_rx_ms = now;
+    if (s_manual_active) {
+        s_manual_last_rx_ms = now;
+        s_manual_last_sequence = sequence;
+    }
 }
 
 static void EndManualToZero(uint32_t now, const char *reason)
@@ -1092,8 +1142,9 @@ static void EndManualToZero(uint32_t now, const char *reason)
     s_manual_active = 0;
     CL_StopAll();
     s_motor_timeout_armed = 0;
-    printf("[MANUAL] ms=%lu event=SAFE_ZERO reason=%s\r\n",
-           (unsigned long)now, reason);
+    printf("[MANUAL] ms=%lu event=SAFE_ZERO reason=%s last_seq=%lu\r\n",
+           (unsigned long)now, reason,
+           (unsigned long)s_manual_last_sequence);
     ReturnToBalanceZero(now);
 }
 
@@ -1110,7 +1161,8 @@ static void ManualTick(uint32_t now)
         StopExperiment(now, "MANUAL_PWM_LOST");
         return;
     }
-    if (AbsFloat(actual) > MANUAL_ACTUAL_LIMIT_DEG) {
+    if (actual > MANUAL_ACTUAL_POS_LIMIT_DEG ||
+        actual < -MANUAL_ACTUAL_NEG_LIMIT_DEG) {
         EndManualToZero(now, "MOTOR_ANGLE_LIMIT");
         return;
     }
@@ -1129,8 +1181,8 @@ static void PrintHelp(void)
     printf("[HELP] BALANCE,ZERO returns_motor_to_saved_balance_pose\r\n");
     printf("[HELP] BREAKAWAY,POS | BREAKAWAY,NEG | BREAKAWAY,STATUS\r\n");
     printf("[HELP] FAULT,CLEAR | SINE,START | SINE,STATUS\r\n");
-    printf("[HELP] MANUAL,START | MANUAL,ANGLE,-2..2 | "
-           "MANUAL,HEARTBEAT | MANUAL,STOP\r\n");
+    printf("[HELP] MANUAL,START[,SEQ] | MANUAL,ANGLE,-15..15[,SEQ] | "
+           "MANUAL,HEARTBEAT[,SEQ] | MANUAL,STOP[,SEQ]\r\n");
     printf("[HELP] STREAM,ON | STREAM,OFF ; commands_end_in_LF_or_CRLF\r\n");
     printf("[HELP] CH0=position_mm CH1=velocity_mm_s CH2=motor_cmd_deg "
            "CH3=motor_real_deg period_ms=20 invalid=-9999\r\n");
@@ -1160,17 +1212,21 @@ static void HandleCommand(ExperimentCommand command, uint32_t now)
     case EXP_FAULT_CLEAR: ClearMotorFault(now); break;
     case EXP_SINE_START: StartSine(now); break;
     case EXP_SINE_STATUS: PrintSineStatus(now); break;
-    case EXP_MANUAL_START: StartManual(now); break;
-    case EXP_MANUAL_ANGLE: ManualAngle(command.angle_deg, now); break;
-    case EXP_MANUAL_HEARTBEAT: ManualHeartbeat(now); break;
-    case EXP_MANUAL_STOP: StopExperiment(now, "MANUAL_STOP"); break;
+    case EXP_MANUAL_START: StartManual(now, command.sequence); break;
+    case EXP_MANUAL_ANGLE:
+        ManualAngle(command.angle_deg, command.sequence, now); break;
+    case EXP_MANUAL_HEARTBEAT:
+        ManualHeartbeat(command.sequence, now); break;
+    case EXP_MANUAL_STOP:
+        s_manual_last_sequence = command.sequence;
+        StopExperiment(now, "MANUAL_STOP"); break;
     case EXP_STOP: StopExperiment(now, "COMMAND"); break;
     case EXP_STATUS: PrintStatus(now); PrintBalance(); break;
     case EXP_STREAM_ON: s_stream = 1; printf("[STREAM] ON\r\n"); break;
     case EXP_STREAM_OFF: s_stream = 0; printf("[STREAM] OFF\r\n"); break;
     case EXP_HELP: PrintHelp(); break;
     default:
-        printf("[ERR] BAD_COMMAND_OR_RANGE use_HELP angle_range=24..40\r\n");
+        printf("[ERR] BAD_COMMAND_OR_RANGE use_HELP\r\n");
         break;
     }
 }
@@ -1230,6 +1286,14 @@ int main(void)
 
     printf("[BOOT] BUILD_ID=%s auto_motion=OFF uart0=115200_8N1 "
            "TX=PA10 RX=PA11\r\n", BUILD_ID);
+    printf("[MANUAL_CONFIG] relative_to=BALANCE_ZERO command_limit_deg=%.1f "
+           "mechanical_pos_deg=%.1f mechanical_neg_deg=%.1f "
+           "mechanical_limit_confirmed=%u actual_pos_trip_deg=%.1f "
+           "actual_neg_trip_deg=%.1f\r\n", MANUAL_ANGLE_LIMIT_DEG,
+           MANUAL_MECHANICAL_POS_LIMIT_DEG,
+           MANUAL_MECHANICAL_NEG_LIMIT_DEG,
+           (unsigned)MANUAL_MECHANICAL_LIMIT_CONFIRMED,
+           MANUAL_ACTUAL_POS_LIMIT_DEG, MANUAL_ACTUAL_NEG_LIMIT_DEG);
     PrintHelp();
     PrintBalance();
 

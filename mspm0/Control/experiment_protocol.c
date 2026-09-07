@@ -2,6 +2,29 @@
 #include <stdlib.h>
 #include <string.h>
 
+static uint8_t ParseSequence(const char *text, uint32_t *sequence)
+{
+    char *end;
+    unsigned long value;
+    if (text == 0 || *text < '0' || *text > '9') return 0U;
+    value = strtoul(text, &end, 10);
+    if (end == text || *end != '\0' || value > 0xFFFFFFFFUL) return 0U;
+    *sequence = (uint32_t)value;
+    return 1U;
+}
+
+static uint8_t MatchSequenced(const char *line, const char *name,
+                              uint32_t *sequence)
+{
+    size_t length = strlen(name);
+    if (strcmp(line, name) == 0) {
+        *sequence = 0U;
+        return 1U;
+    }
+    return strncmp(line, name, length) == 0 && line[length] == ',' &&
+           ParseSequence(line + length + 1U, sequence);
+}
+
 void ExperimentParser_Reset(ExperimentParser *parser)
 {
     parser->length = 0;
@@ -16,7 +39,7 @@ void ExperimentParser_Discard(ExperimentParser *parser)
 
 static ExperimentCommand Parse(char *line)
 {
-    ExperimentCommand command = { EXP_INVALID, 0.0f };
+    ExperimentCommand command = { EXP_INVALID, 0.0f, 0U };
     char *end;
     float angle;
     if (strcmp(line, "CAL,CENTER") == 0) command.type = EXP_CENTER;
@@ -39,13 +62,18 @@ static ExperimentCommand Parse(char *line)
     else if (strcmp(line, "FAULT,CLEAR") == 0) command.type = EXP_FAULT_CLEAR;
     else if (strcmp(line, "SINE,START") == 0) command.type = EXP_SINE_START;
     else if (strcmp(line, "SINE,STATUS") == 0) command.type = EXP_SINE_STATUS;
-    else if (strcmp(line, "MANUAL,START") == 0) command.type = EXP_MANUAL_START;
-    else if (strcmp(line, "MANUAL,HEARTBEAT") == 0) command.type = EXP_MANUAL_HEARTBEAT;
-    else if (strcmp(line, "MANUAL,STOP") == 0) command.type = EXP_MANUAL_STOP;
+    else if (MatchSequenced(line, "MANUAL,START", &command.sequence))
+        command.type = EXP_MANUAL_START;
+    else if (MatchSequenced(line, "MANUAL,HEARTBEAT", &command.sequence))
+        command.type = EXP_MANUAL_HEARTBEAT;
+    else if (MatchSequenced(line, "MANUAL,STOP", &command.sequence))
+        command.type = EXP_MANUAL_STOP;
     else if (strncmp(line, "MANUAL,ANGLE,", 13) == 0) {
         angle = strtof(line + 13, &end);
-        if (end != line + 13 && *end == '\0' &&
-            angle >= -2.0f && angle <= 2.0f) {
+        if (end != line + 13 &&
+            (*end == '\0' || (*end == ',' && ParseSequence(
+                end + 1, &command.sequence))) &&
+            angle >= -15.0f && angle <= 15.0f) {
             command.type = EXP_MANUAL_ANGLE;
             command.angle_deg = angle;
         }
@@ -70,6 +98,7 @@ int ExperimentParser_Feed(ExperimentParser *parser, char byte,
             ExperimentParser_Reset(parser);
             command->type = EXP_INVALID;
             command->angle_deg = 0;
+            command->sequence = 0U;
             return 1;
         }
         if (parser->length == 0) return 0;

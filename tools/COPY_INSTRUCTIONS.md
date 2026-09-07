@@ -1,4 +1,4 @@
-# 当前复制包：ROUND-042 Windows键盘倾斜调试器
+# 当前复制包：ROUND-043 Windows键盘倾斜调试器V2
 
 固定目录“待复制文件”每轮更新覆盖，不含可烧录文件。
 
@@ -13,7 +13,11 @@ empty.c放工程根目录，Control和Hardware中的文件放进对应目录，�
 ROUND-040已修复BALANCE,ZERO显示REACHED后仍被旧10秒计时触发MOTOR_TIMEOUT的问题。如当前已在零点±0.30°内，会直接输出event=REACHED mode=NO_MOTION，不启动运动超时。
 ROUND-041根据fault=DIRECTION以及QEI/PWM符号相反的实测，将重新建零后的电机闭环优先反馈改为PB20绝对PWM。Control/closed_loop.c必须一起覆盖。
 新增FAULT,CLEAR、SINE,START和SINE,STATUS。SINE,START只执行1.0 Hz、±1.3°、8秒的单频正弦，不扫其他频率；球超过±40 mm或电机超过±2°时停止并回零。
-ROUND-042新增MANUAL串口协议和500 ms通信看门狗，上位机目标角和固件均限幅±2.0°。PWM反馈的NO_ENCODER确认窗口从64脉冲放宽到256脉冲，实际角±2.3°保护仍保留。
+ROUND-042首次加入MANUAL协议和500 ms通信看门狗；当时的±2.0°/±2.3°限制已被ROUND-043的新配置取代，不再生效。PWM反馈的NO_ENCODER确认窗口仍为256脉冲。
+
+ROUND-043将MANUAL协议统一为相对平衡零点±15°。固件的正/负机械限位在Control/motor_balance_config.h中独立配置，当前均为15°且CONFIRMED=0（未实测），首次必须无球从±0.5°开始。
+本轮修改了Hardware/experiment_console.c/.h：接收缓冲增大、发送帧增大，并增加RX字节/整行/溢出统计；这两个文件必须一起覆盖。
+键盘工具的手动启动需要收到固件确认，所有写串口操作已改为单队列，心跳独立运行。空格退出手动并调用BALANCE,ZERO，S只停止脉冲。
 新建pc_tools/ball_keyboard_debugger；安装requirements.txt后双击run.bat。Python必须独占串口，运行前关闭VOFA。
 在CCS中Clean后Build并自行烧录。Python用法见pc_tools/ball_keyboard_debugger/README.md。
 

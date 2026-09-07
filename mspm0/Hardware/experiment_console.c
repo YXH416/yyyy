@@ -4,8 +4,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 
-#define RX_SIZE 256U
-#define TX_SIZE 2048U
+#define RX_SIZE 512U
+#define TX_SIZE 4096U
 #define RX_ERRORS (DL_UART_MAIN_INTERRUPT_OVERRUN_ERROR | \
                    DL_UART_MAIN_INTERRUPT_FRAMING_ERROR | \
                    DL_UART_MAIN_INTERRUPT_PARITY_ERROR | \
@@ -14,6 +14,9 @@ static volatile uint8_t s_rx[RX_SIZE];
 static volatile uint16_t s_read, s_write;
 static volatile uint8_t s_bad_rx;
 static volatile uint32_t s_rx_errors;
+static volatile uint32_t s_rx_overflows;
+static volatile uint32_t s_rx_bytes;
+static uint32_t s_rx_lines;
 static char s_tx[TX_SIZE];
 static uint16_t s_tx_read, s_tx_write;
 static uint32_t s_tx_drops;
@@ -41,7 +44,8 @@ void UART_0_INST_IRQHandler(void)
     while (!DL_UART_Main_isRXFIFOEmpty(UART_0_INST)) {
         uint8_t byte = DL_UART_Main_receiveData(UART_0_INST);
         uint16_t next = (uint16_t)((s_write + 1U) % RX_SIZE);
-        if (next == s_read) { s_bad_rx = 1; s_rx_errors++; }
+        s_rx_bytes++;
+        if (next == s_read) { s_bad_rx = 1; s_rx_overflows++; }
         else { s_rx[s_write] = byte; s_write = next; }
     }
 }
@@ -69,14 +73,17 @@ int Console_TakeCommand(ExperimentCommand *command)
         byte = s_rx[s_read];
         s_read = (uint16_t)((s_read + 1U) % RX_SIZE);
         if (!mask) __enable_irq();
-        if (ExperimentParser_Feed(&s_parser, (char)byte, command)) return 1;
+        if (ExperimentParser_Feed(&s_parser, (char)byte, command)) {
+            s_rx_lines++;
+            return 1;
+        }
     }
     return 0;
 }
 
 int Console_Printf(const char *format, ...)
 {
-    char line[384];
+    char line[768];
     int length, i;
     unsigned free_bytes = (s_tx_read + TX_SIZE - s_tx_write - 1U) % TX_SIZE;
     va_list args;
@@ -106,4 +113,7 @@ void Console_DrainTx(void)
     }
 }
 uint32_t Console_GetRxErrors(void) { return s_rx_errors; }
+uint32_t Console_GetRxOverflows(void) { return s_rx_overflows; }
+uint32_t Console_GetRxBytes(void) { return s_rx_bytes; }
+uint32_t Console_GetRxLines(void) { return s_rx_lines; }
 uint32_t Console_GetTxDrops(void) { return s_tx_drops; }

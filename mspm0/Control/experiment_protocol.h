@@ -16,6 +16,7 @@ typedef enum {
 typedef struct {
     ExperimentCommandType type;
     float angle_deg;
+    uint32_t sequence;
 } ExperimentCommand;
 
 /* A malformed/oversized line is discarded in full through its terminator. */

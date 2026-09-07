@@ -5,7 +5,7 @@
 
 static ExperimentCommand Feed(ExperimentParser *p, const char *text, int count)
 {
-    ExperimentCommand result = { EXP_NONE, 0 }, next;
+    ExperimentCommand result = { EXP_NONE, 0, 0 }, next;
     int seen = 0;
     while (*text) {
         if (ExperimentParser_Feed(p, *text++, &next)) {
@@ -47,11 +47,19 @@ int main(void)
     assert(Feed(&p, "manual,start\n", 1).type == EXP_MANUAL_START);
     assert(Feed(&p, "MANUAL,HEARTBEAT\n", 1).type == EXP_MANUAL_HEARTBEAT);
     assert(Feed(&p, "MANUAL,STOP\n", 1).type == EXP_MANUAL_STOP);
+    c = Feed(&p, "MANUAL,START,41\n", 1);
+    assert(c.type == EXP_MANUAL_START && c.sequence == 41U);
+    c = Feed(&p, "MANUAL,HEARTBEAT,42\n", 1);
+    assert(c.type == EXP_MANUAL_HEARTBEAT && c.sequence == 42U);
+    assert(Feed(&p, "MANUAL,START,-1\n", 1).type == EXP_INVALID);
     c = Feed(&p, "MANUAL,ANGLE,-1.50\n", 1);
     assert(c.type == EXP_MANUAL_ANGLE && c.angle_deg == -1.5f);
-    assert(Feed(&p, "MANUAL,ANGLE,2.0\n", 1).type == EXP_MANUAL_ANGLE);
-    assert(Feed(&p, "MANUAL,ANGLE,-2.0\n", 1).type == EXP_MANUAL_ANGLE);
-    assert(Feed(&p, "MANUAL,ANGLE,2.01\n", 1).type == EXP_INVALID);
+    c = Feed(&p, "MANUAL,ANGLE,15.0,43\n", 1);
+    assert(c.type == EXP_MANUAL_ANGLE && c.angle_deg == 15.0f &&
+           c.sequence == 43U);
+    assert(Feed(&p, "MANUAL,ANGLE,-15.0\n", 1).type == EXP_MANUAL_ANGLE);
+    assert(Feed(&p, "MANUAL,ANGLE,15.01\n", 1).type == EXP_INVALID);
+    assert(Feed(&p, "MANUAL,ANGLE,1.0,BOGUS\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "MANUAL,ANGLE,nan\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "JOG,+10\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "JOG,-1junk\n", 1).type == EXP_INVALID);
