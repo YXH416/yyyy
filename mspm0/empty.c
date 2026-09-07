@@ -15,7 +15,7 @@
 #include <stdio.h>
 #define printf Console_Printf
 
-#define BUILD_ID                         "ROUND-044_CUMULATIVE_KEYBOARD_V1"
+#define BUILD_ID                         "ROUND-045_REMOTE_RX_RECOVERY_V1"
 #define CONTROL_PERIOD_MS                (5U)
 #define K230_FRESH_MS                    (250U)
 #define SCALE_CAPTURE_SAMPLES            (12U)

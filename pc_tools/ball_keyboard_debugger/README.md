@@ -14,10 +14,12 @@ py -3 app.py
 对应固件构建标识：
 
 ```text
-ROUND-044_CUMULATIVE_KEYBOARD_V1
+ROUND-045_REMOTE_RX_RECOVERY_V1
 ```
 
 ## 快速使用
+
+第45轮修正启动期间RX_LOST导致停发心跳的问题，删除目标位置设置。请同时覆盖Python与主控串口文件，详见 [本轮修正](ROUND045_FIX.md)。
 
 1. 选择COM口，点击“连接”。工具自动读取PWM、故障和当前相对角。
 2. 若PWM有效、Fault=NONE且电机在平衡零点±0.30°内，自动进入“遥控待命”，无需再点击进入手动。

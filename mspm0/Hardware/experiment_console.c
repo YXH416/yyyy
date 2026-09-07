@@ -16,6 +16,7 @@ static volatile uint8_t s_bad_rx;
 static volatile uint32_t s_rx_errors;
 static volatile uint32_t s_rx_overflows;
 static volatile uint32_t s_rx_bytes;
+static volatile uint32_t s_rx_error_bits;
 static uint32_t s_rx_lines;
 static char s_tx[TX_SIZE];
 static uint16_t s_tx_read, s_tx_write;
@@ -25,6 +26,8 @@ static ExperimentParser s_parser;
 void Console_Init(void)
 {
     ExperimentParser_Reset(&s_parser);
+    /* Do not depend on a stale CCS-generated SysConfig enabling the FIFO. */
+    DL_UART_Main_enableFIFOs(UART_0_INST);
     DL_UART_Main_setRXFIFOThreshold(UART_0_INST,
                                     DL_UART_MAIN_RX_FIFO_LEVEL_ONE_ENTRY);
     DL_UART_Main_clearInterruptStatus(UART_0_INST, RX_ERRORS |
@@ -38,7 +41,7 @@ void Console_Init(void)
 void UART_0_INST_IRQHandler(void)
 {
     uint32_t errors = DL_UART_Main_getRawInterruptStatus(UART_0_INST, RX_ERRORS);
-    if (errors) { s_bad_rx = 1; s_rx_errors++; }
+    if (errors) { s_bad_rx = 1; s_rx_errors++; s_rx_error_bits |= errors; }
     DL_UART_Main_clearInterruptStatus(UART_0_INST, RX_ERRORS |
         DL_UART_MAIN_INTERRUPT_RX | DL_UART_MAIN_INTERRUPT_RX_TIMEOUT_ERROR);
     while (!DL_UART_Main_isRXFIFOEmpty(UART_0_INST)) {
@@ -63,7 +66,10 @@ int Console_TakeCommand(ExperimentCommand *command)
             s_bad_rx = 0;
             if (!mask) __enable_irq();
             ExperimentParser_Discard(&s_parser);
-            Console_Printf("[ERR] RX_LOST resend_after_newline\r\n");
+            Console_Printf("[ERR] RX_LOST hw_errors=%lu overflow=%lu bits=0x%lx resend_after_newline\r\n",
+                           (unsigned long)s_rx_errors,
+                           (unsigned long)s_rx_overflows,
+                           (unsigned long)s_rx_error_bits);
             return 0;
         }
         if (s_read == s_write) {

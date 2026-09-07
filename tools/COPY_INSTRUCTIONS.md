@@ -1,4 +1,6 @@
-# 当前复制包：ROUND-044 Windows键盘累加角度遥控器
+# 当前复制包：ROUND-045 遥控启动与RX_LOST修正
+
+本轮必须同时更新pc_tools/ball_keyboard_debugger/app.py、mspm0/empty.c、mspm0/Hardware/experiment_console.c。修正启动时RX_LOST导致心跳停止的问题，显式开启UART FIFO，并细分接收错误日志。删除目标位置控件；松键保持当前目标。实机问题若继续出现，请记录MANUAL STARTED之后的完整日志和STATUS。详情见Python目录ROUND045_FIX.md。
 
 固定目录“待复制文件”每轮更新覆盖，不含可烧录文件。
 

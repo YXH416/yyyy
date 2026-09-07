@@ -12,7 +12,7 @@
 当前MSPM0入口为 `mspm0/empty.c`，构建标识：
 
 ```text
-ROUND-044_CUMULATIVE_KEYBOARD_V1
+ROUND-045_REMOTE_RX_RECOVERY_V1
 ```
 
 当前为视觉标定与手动角度实验平台：上电不自动运动，VOFA FireWater每20ms显示球位置、球速度、电机目标角和实际角。通过UART0发送CAL、ANGLE、STOP等命令。
