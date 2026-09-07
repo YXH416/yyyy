@@ -1,4 +1,4 @@
-# 当前复制包：ROUND-043 Windows键盘倾斜调试器V2
+# 当前复制包：ROUND-044 Windows键盘累加角度遥控器
 
 固定目录“待复制文件”每轮更新覆盖，不含可烧录文件。
 
@@ -18,6 +18,8 @@ ROUND-042首次加入MANUAL协议和500 ms通信看门狗；当时的±2.0°/±2
 ROUND-043将MANUAL协议统一为相对平衡零点±15°。固件的正/负机械限位在Control/motor_balance_config.h中独立配置，当前均为15°且CONFIRMED=0（未实测），首次必须无球从±0.5°开始。
 本轮修改了Hardware/experiment_console.c/.h：接收缓冲增大、发送帧增大，并增加RX字节/整行/溢出统计；这两个文件必须一起覆盖。
 键盘工具的手动启动需要收到固件确认，所有写串口操作已改为单队列，心跳独立运行。空格退出手动并调用BALANCE,ZERO，S只停止脉冲。
+
+ROUND-044取消“直接倾斜/微调”切换。轻按→目标+1°，轻按←目标-1°；长按300 ms后每100 ms继续累加，松开保持已下发的角度，不自动回零。连接后自动检查PWM、Fault和当前相对角；零点内自动待命，否则明确提示先回零。故障、LINK_TIMEOUT或S停止后必须点击“确认重新启用”。
 新建pc_tools/ball_keyboard_debugger；安装requirements.txt后双击run.bat。Python必须独占串口，运行前关闭VOFA。
 在CCS中Clean后Build并自行烧录。Python用法见pc_tools/ball_keyboard_debugger/README.md。
 

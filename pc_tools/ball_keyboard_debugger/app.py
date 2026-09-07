@@ -1,4 +1,4 @@
-"""ROUND-043 Windows keyboard debugger for the MSPM0 ball-balance rig."""
+"""ROUND-044 intuitive cumulative-angle keyboard controller."""
 
 from __future__ import annotations
 
@@ -25,8 +25,10 @@ PROTOCOL_ANGLE_LIMIT = 15.0
 HEARTBEAT_MS = 200
 STATUS_PERIOD_MS = 1000
 MANUAL_START_TIMEOUT_MS = 1500
-FINE_REPEAT_DELAY_MS = 350
-FINE_REPEAT_MS = 120
+ANGLE_STEP_DEG = 1.0
+KEY_REPEAT_DELAY_MS = 300
+KEY_REPEAT_MS = 100
+ZERO_READY_TOLERANCE_DEG = 0.30
 BALL_LINE = re.compile(
     r"^ball:([-+0-9.eE]+),([-+0-9.eE]+),([-+0-9.eE]+),([-+0-9.eE]+)$"
 )
@@ -201,7 +203,7 @@ class Recorder:
 class BallDebugger(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("平衡球键盘调试器 · ROUND-043")
+        self.title("平衡球键盘调试器 · ROUND-044")
         self.geometry("980x720")
         self.minsize(860, 650)
         self.inbox: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -214,10 +216,13 @@ class BallDebugger(tk.Tk):
         self.fault = "UNKNOWN"
         self.feedback = "UNKNOWN"
         self.manual_active = False
-        self.manual_state = "STOPPED"
-        self.manual_detail = "尚未进入手动"
+        self.manual_state = "DISCONNECTED"
+        self.manual_detail = "请先连接串口"
         self.manual_start_deadline = 0.0
         self.ignore_manual_started = False
+        self.auto_enable_allowed = False
+        self.auto_enable_after_zero = False
+        self.zero_request_pending = False
         self.firmware_command_limit = PROTOCOL_ANGLE_LIMIT
         self.mechanical_pos_limit = PROTOCOL_ANGLE_LIMIT
         self.mechanical_neg_limit = PROTOCOL_ANGLE_LIMIT
@@ -225,8 +230,8 @@ class BallDebugger(tk.Tk):
         self.current_manual_angle = 0.0
         self.pressed: set[str] = set()
         self.release_jobs: dict[str, str] = {}
-        self.fine_repeat_job: str | None = None
-        self.fine_repeat_key: str | None = None
+        self.repeat_job: str | None = None
+        self.repeat_key: str | None = None
         self.last_focus_ok = True
         self.heartbeat_stop = threading.Event()
         self.heartbeat_thread = threading.Thread(
@@ -306,30 +311,24 @@ class BallDebugger(tk.Tk):
 
         controls = ttk.LabelFrame(self, text="键盘控制", padding=10)
         controls.pack(fill="x", padx=10)
-        self.mode_var = tk.StringVar(value="direct")
-        ttk.Radiobutton(controls, text="直接倾斜（默认）", variable=self.mode_var,
-                        value="direct", command=self.mode_changed).grid(row=0, column=0, sticky="w")
-        ttk.Radiobutton(controls, text="微调", variable=self.mode_var,
-                        value="fine", command=self.mode_changed).grid(row=0, column=1, sticky="w")
-        ttk.Label(controls, text="倾角幅值°").grid(row=1, column=0, sticky="e")
-        self.amplitude_var = tk.StringVar(value="0.5")
-        ttk.Combobox(controls, textvariable=self.amplitude_var, width=8,
-                     values=("0.5", "1.0", "2.0", "3.0", "5.0", "10.0", "15.0")).grid(row=1, column=1, sticky="w", padx=5)
-        ttk.Label(controls, text="微调步长°").grid(row=1, column=2, sticky="e")
-        self.step_var = tk.StringVar(value="0.1")
-        ttk.Combobox(controls, textvariable=self.step_var, width=8,
-                     values=("0.1", "0.2", "0.5", "1.0")).grid(row=1, column=3, sticky="w", padx=5)
-        ttk.Label(controls, text="目标位置").grid(row=2, column=0, sticky="e")
+        ttk.Label(controls, text="累加角度遥控：每次1°",
+                  style="State.TLabel").grid(row=0, column=0, columnspan=3,
+                                             sticky="w")
+        ttk.Label(controls, text="目标位置").grid(row=1, column=0, sticky="e")
         targets = ttk.Frame(controls)
-        targets.grid(row=2, column=1, columnspan=3, sticky="w")
+        targets.grid(row=1, column=1, columnspan=3, sticky="w")
         for value in (-50, 0, 50):
             ttk.Radiobutton(targets, text=f"{value:+d} mm", variable=self.target_pos_var,
                             value=float(value), command=self.target_changed).pack(side="left", padx=3)
-        self.manual_btn = ttk.Button(controls, text="进入手动", command=self.toggle_manual)
+        self.manual_btn = ttk.Button(controls, text="确认启用遥控",
+                                     command=self.confirm_enable)
         self.manual_btn.grid(row=0, column=4, padx=14)
         ttk.Button(controls, text="停止脉冲 (S)", command=self.stop_manual).grid(row=1, column=4, padx=14)
-        ttk.Label(controls, text="按住→/←给倾角；松开回0°；空格回平衡零点；↑/↓调幅值或步长").grid(
-            row=3, column=0, columnspan=5, sticky="w", pady=(8, 0)
+        ttk.Label(controls, text="轻按→/+1°，←/-1°；长按300 ms后每100 ms继续1°；松开保持当前目标").grid(
+            row=2, column=0, columnspan=5, sticky="w", pady=(8, 0)
+        )
+        ttk.Label(controls, text="空格：回平衡零点    S：停止脉冲    Esc：退出").grid(
+            row=3, column=0, columnspan=5, sticky="w"
         )
         self.manual_detail_label = ttk.Label(controls, text=self.manual_detail)
         self.manual_detail_label.grid(row=4, column=0, columnspan=5,
@@ -382,6 +381,10 @@ class BallDebugger(tk.Tk):
         self.connect_btn.configure(text="断开")
         self.com_label.configure(text=f"{self.port_var.get()}：已连接")
         self.append_log(f"[PC] CONNECT {self.port_var.get()} @ {BAUD}")
+        self.auto_enable_allowed = True
+        self.auto_enable_after_zero = False
+        self.ignore_manual_started = False
+        self.set_manual_state("CHECKING", "正在检查PWM反馈、故障和零点……")
         self.send("STREAM,ON", record=False, priority=5)
         self.send("STATUS", record=False, priority=5)
 
@@ -390,11 +393,13 @@ class BallDebugger(tk.Tk):
             self.send("MANUAL,ANGLE,0.000", priority=0)
             time.sleep(0.04)
         self.link.close()
-        self.cancel_fine_repeat()
-        self.set_manual_state("STOPPED", f"串口已断开：{reason}")
+        self.cancel_repeat()
+        self.auto_enable_allowed = False
+        self.auto_enable_after_zero = False
+        self.set_manual_state("DISCONNECTED", f"串口已断开：{reason}")
         self.connect_btn.configure(text="连接")
         self.com_label.configure(text="未连接")
-        self.mode_label.configure(text="状态：停止")
+        self.mode_label.configure(text="状态：未连接")
         self.append_log(f"[PC] DISCONNECT reason={reason}")
         self.recorder.event("DISCONNECT", reason)
 
@@ -459,6 +464,15 @@ class BallDebugger(tk.Tk):
             self.fault = fields.get("fault", self.fault)
             self.feedback = fields.get("fb", self.feedback)
             try:
+                status_motor_deg = float(fields.get("motor_deg", "nan"))
+                if status_motor_deg == status_motor_deg:
+                    self.motor_real = status_motor_deg
+                status_cmd_deg = float(fields.get("cmd_deg", "nan"))
+                if status_cmd_deg == status_cmd_deg:
+                    self.motor_cmd = status_cmd_deg
+            except ValueError:
+                pass
+            try:
                 self.firmware_command_limit = float(fields.get(
                     "manual_cmd_limit_deg", self.firmware_command_limit
                 ))
@@ -473,10 +487,23 @@ class BallDebugger(tk.Tk):
             self.mechanical_limit_confirmed = (
                 fields.get("manual_limit_confirmed") == "1"
             )
-            if fields.get("manual") == "1" and not self.ignore_manual_started:
+            if self.fault != "NONE" and self.manual_state in (
+                    "CHECKING", "STARTING", "ZEROING"):
+                self.auto_enable_allowed = False
+                self.auto_enable_after_zero = False
+                self.set_manual_state("FAULT", f"固件故障：{self.fault}")
+            elif fields.get("manual") == "1" and not self.ignore_manual_started:
+                if self.manual_state != "ACTIVE" and self.motor_cmd is not None:
+                    self.current_manual_angle = max(
+                        -PROTOCOL_ANGLE_LIMIT,
+                        min(PROTOCOL_ANGLE_LIMIT, self.motor_cmd),
+                    )
                 self.set_manual_state("ACTIVE", "固件已确认手动模式")
+            elif self.manual_state == "CHECKING":
+                self.evaluate_connection_ready()
             elif fields.get("manual") == "0" and self.manual_state == "ACTIVE":
-                self.set_manual_state("STOPPED", "固件报告手动模式已退出")
+                self.auto_enable_allowed = False
+                self.set_manual_state("STOPPED", "固件报告遥控已退，需要确认重新启用")
         elif line.startswith("[VISION]"):
             self.vision_valid = fields.get("fresh") == "1"
             if not self.vision_valid:
@@ -484,11 +511,22 @@ class BallDebugger(tk.Tk):
         elif line.startswith("[MOTOR_FAULT]"):
             if "fault" in fields:
                 self.fault = fields["fault"]
+            self.auto_enable_allowed = False
+            self.auto_enable_after_zero = False
             self.set_manual_state("FAULT", line)
         elif line.startswith("[ERR]"):
             if "fault" in fields:
                 self.fault = fields["fault"]
-            if self.manual_state == "STARTING" or "MANUAL_" in line:
+            if self.zero_request_pending and "BALANCE" in line:
+                self.zero_request_pending = False
+                self.auto_enable_allowed = False
+                self.auto_enable_after_zero = False
+                self.set_manual_state("STOPPED", f"回零失败：{line}")
+            elif "MANUAL_MOTOR_NOT_AT_ZERO" in line:
+                self.auto_enable_after_zero = True
+                self.set_manual_state("NEEDS_ZERO", "需要回平衡零点")
+            elif self.manual_state == "STARTING" or "MANUAL_" in line:
+                self.auto_enable_allowed = False
                 self.set_manual_state("STOPPED", line)
         elif line.startswith("[FAULT]") and fields.get("event") == "CLEARED":
             self.fault = fields.get("fault", "NONE")
@@ -497,25 +535,45 @@ class BallDebugger(tk.Tk):
         elif line.startswith("[MANUAL]"):
             event = fields.get("event")
             if event == "STARTED" and not self.ignore_manual_started:
-                self.set_manual_state("ACTIVE", "手动已启动，可使用方向键")
+                self.auto_enable_after_zero = False
+                self.set_manual_state("ACTIVE", "遥控待命：可使用方向键")
             elif event in ("STOPPED", "SAFE_ZERO"):
-                self.ignore_manual_started = False
                 reason = fields.get("reason", event)
+                if reason == "MANUAL_STOP" and self.zero_request_pending:
+                    self.set_manual_state("ZEROING", "手动已退出，等待回零……")
+                    self.update_dashboard()
+                    self.append_log(line)
+                    self.recorder.event("RX", line)
+                    return
+                self.ignore_manual_started = False
                 state = ("FAULT" if any(token in reason for token in
                          ("FAULT", "PWM_LOST", "FEEDBACK")) else "STOPPED")
-                self.set_manual_state(state, f"手动已退出：{reason}")
+                self.auto_enable_allowed = False
+                self.auto_enable_after_zero = False
+                self.set_manual_state(state, f"遥控已退出：{reason}，需要确认重新启用")
         elif line.startswith("[BALANCE_ZERO]"):
             event = fields.get("event", "")
             if event == "STARTED":
-                self.set_manual_state("STOPPED", "电机正在回平衡零点……")
+                self.set_manual_state("ZEROING", "电机正在回平衡零点……")
             elif event == "REACHED":
-                self.set_manual_state("STOPPED", "已到达平衡零点")
+                self.zero_request_pending = False
+                self.set_manual_state("STOPPED", "已到达平衡零点，正在启用遥控……")
+                if self.auto_enable_after_zero and self.auto_enable_allowed:
+                    self.after(50, self.start_manual)
         elif line.startswith("[STOP]"):
-            self.ignore_manual_started = False
             reason = fields.get("reason", "STOP")
+            if reason == "MANUAL_STOP" and self.zero_request_pending:
+                self.set_manual_state("ZEROING", "已停止旧目标，等待回零……")
+                self.update_dashboard()
+                self.append_log(line)
+                self.recorder.event("RX", line)
+                return
+            self.ignore_manual_started = False
             state = ("FAULT" if any(token in reason for token in
                      ("FAULT", "PWM_LOST", "FEEDBACK")) else "STOPPED")
-            self.set_manual_state(state, f"已停止：{reason}")
+            self.auto_enable_allowed = False
+            self.auto_enable_after_zero = False
+            self.set_manual_state(state, f"已停止：{reason}，需要确认重新启用")
 
         self.update_dashboard()
         self.append_log(line)
@@ -537,8 +595,10 @@ class BallDebugger(tk.Tk):
         self.pwm_label.configure(text=f"PWM：{self.flag(self.pwm_valid)}  FB:{self.feedback}")
         self.fault_label.configure(text=f"Fault：{self.fault}")
         state_name = {
-            "STOPPED": "停止", "STARTING": "正在启动……",
-            "ACTIVE": "手动已启动", "FAULT": "故障",
+            "DISCONNECTED": "未连接", "CHECKING": "正在检查……",
+            "NEEDS_ZERO": "需要回零", "ZEROING": "正在回零……",
+            "STOPPED": "已停止", "STARTING": "正在启动……",
+            "ACTIVE": "遥控待命", "FAULT": "故障",
         }.get(self.manual_state, self.manual_state)
         self.mode_label.configure(text=f"状态：{state_name}")
         confirmed = "已确认" if self.mechanical_limit_confirmed else "未确认"
@@ -591,19 +651,66 @@ class BallDebugger(tk.Tk):
             self.current_manual_angle = 0.0
             self.pressed.clear()
             self.cancel_key_releases()
-            self.cancel_fine_repeat()
+            self.cancel_repeat()
         if hasattr(self, "manual_btn"):
-            self.manual_btn.configure(
-                text="退出手动" if state in ("STARTING", "ACTIVE") else "进入手动"
-            )
+            if state == "NEEDS_ZERO":
+                button_text, button_state = "回零并启用", "normal"
+            elif state in ("STOPPED", "FAULT"):
+                button_text, button_state = "确认重新启用", "normal"
+            elif state == "ACTIVE":
+                button_text, button_state = "遥控已启用", "disabled"
+            elif state == "DISCONNECTED":
+                button_text, button_state = "等待串口", "disabled"
+            else:
+                button_text, button_state = "正在处理……", "disabled"
+            self.manual_btn.configure(text=button_text, state=button_state)
             self.manual_detail_label.configure(text=detail)
         if changed:
             self.recorder.event("MANUAL_STATE", f"{state} {detail}")
         self.update_dashboard()
 
-    def toggle_manual(self) -> None:
-        if self.manual_state in ("STARTING", "ACTIVE"):
-            self.stop_manual()
+    def evaluate_connection_ready(self) -> None:
+        if self.fault != "NONE":
+            self.auto_enable_allowed = False
+            self.set_manual_state(
+                "FAULT", f"固件故障：{self.fault}，不能启用遥控"
+            )
+            return
+        if self.pwm_valid is not True:
+            # A STATUS can arrive between two valid PWM captures.  Stay in the
+            # automatic connection check so a later valid STATUS may proceed;
+            # a real latched motor fault is handled by the branch above.
+            self.set_manual_state("CHECKING", "等待有效PWM反馈……")
+            return
+        if self.motor_real is None:
+            self.set_manual_state("CHECKING", "等待电机实际角……")
+            return
+        if abs(self.motor_real) <= ZERO_READY_TOLERANCE_DEG:
+            self.start_manual()
+        else:
+            self.auto_enable_after_zero = True
+            self.set_manual_state(
+                "NEEDS_ZERO",
+                f"当前{self.motor_real:+.2f}°，需先回平衡零点",
+            )
+
+    def confirm_enable(self) -> None:
+        if not self.link.connected:
+            messagebox.showwarning("未连接", "请先连接串口。")
+            return
+        if self.pwm_valid is not True or self.fault != "NONE":
+            self.send("STATUS")
+            messagebox.showwarning(
+                "不能启用", "请先清除故障，并确认PWM有效。"
+            )
+            return
+        self.auto_enable_allowed = True
+        self.ignore_manual_started = False
+        if self.motor_real is None:
+            self.set_manual_state("CHECKING", "正在重新读取电机角度……")
+            self.send("STATUS", priority=0)
+        elif abs(self.motor_real) > ZERO_READY_TOLERANCE_DEG:
+            self.balance_zero()
         else:
             self.start_manual()
 
@@ -612,8 +719,8 @@ class BallDebugger(tk.Tk):
             messagebox.showwarning("未连接", "请先连接串口。")
             return
         if self.pwm_valid is not True or self.fault != "NONE":
-            self.send("STATUS")
-            messagebox.showwarning("禁止运动", "需要 PWM 有效且 Fault=NONE。")
+            self.auto_enable_allowed = False
+            self.set_manual_state("FAULT", "需要PWM有效且Fault=NONE")
             return
         self.set_manual_state("STARTING", "正在等待固件确认……")
         self.ignore_manual_started = False
@@ -623,28 +730,32 @@ class BallDebugger(tk.Tk):
 
     def stop_manual(self) -> None:
         self.pressed.clear()
-        self.cancel_fine_repeat()
+        self.cancel_repeat()
         if self.manual_state in ("STARTING", "ACTIVE"):
             self.send("MANUAL,STOP")
+        self.auto_enable_allowed = False
+        self.auto_enable_after_zero = False
+        self.zero_request_pending = False
         self.ignore_manual_started = True
-        self.set_manual_state("STOPPED", "用户停止脉冲")
+        self.set_manual_state("STOPPED", "已停止脉冲，需要确认重新启用")
         self.recorder.event("KEY_STOP")
 
     def balance_zero(self) -> None:
         self.pressed.clear()
-        self.cancel_fine_repeat()
+        self.cancel_repeat()
+        if not self.link.connected:
+            return
+        if self.pwm_valid is not True or self.fault != "NONE":
+            self.set_manual_state("FAULT", "回零被拒绝：需要PWM有效且Fault=NONE")
+            return
         if self.manual_state in ("STARTING", "ACTIVE"):
             self.send("MANUAL,STOP")
+        self.auto_enable_allowed = True
+        self.auto_enable_after_zero = True
+        self.zero_request_pending = True
         self.ignore_manual_started = True
-        self.set_manual_state("STOPPED", "正在回平衡零点")
+        self.set_manual_state("ZEROING", "正在回平衡零点……")
         self.send("BALANCE,ZERO")
-
-    def angle_value(self, variable: tk.StringVar, fallback: float) -> float:
-        try:
-            value = abs(float(variable.get()))
-        except ValueError:
-            value = fallback
-        return max(0.01, min(PROTOCOL_ANGLE_LIMIT, value))
 
     def command_manual_angle(self, value: float, event: str) -> None:
         value = max(-PROTOCOL_ANGLE_LIMIT, min(PROTOCOL_ANGLE_LIMIT, value))
@@ -666,6 +777,20 @@ class BallDebugger(tk.Tk):
             self.current_manual_angle = value
             self.recorder.event(event, f"target_deg={value:.3f}")
 
+    def step_angle(self, key: str, event: str) -> None:
+        direction = 1.0 if key == "Right" else -1.0
+        directional_limit = (self.mechanical_pos_limit if direction > 0 else
+                             self.mechanical_neg_limit)
+        limit = min(PROTOCOL_ANGLE_LIMIT, self.firmware_command_limit,
+                    directional_limit)
+        value = self.current_manual_angle + direction * ANGLE_STEP_DEG
+        value = max(-min(PROTOCOL_ANGLE_LIMIT, self.mechanical_neg_limit),
+                    min(limit, value))
+        if abs(value - self.current_manual_angle) < 0.0001:
+            self.cancel_repeat()
+            return
+        self.command_manual_angle(value, event)
+
     def key_down(self, event: tk.Event) -> str | None:
         key = event.keysym
         lower = key.lower()
@@ -679,9 +804,6 @@ class BallDebugger(tk.Tk):
             self.recorder.event("KEY_SPACE_ZERO")
             self.balance_zero()
             return "break"
-        if key in ("Up", "Down"):
-            self.adjust_setting(1 if key == "Up" else -1)
-            return "break"
         if key not in ("Left", "Right"):
             return None
         release_job = self.release_jobs.pop(key, None)
@@ -691,19 +813,11 @@ class BallDebugger(tk.Tk):
         if key in self.pressed:
             return "break"
         self.pressed.add(key)
-        if self.mode_var.get() == "direct":
-            amplitude = self.angle_value(self.amplitude_var, 0.5)
-            value = amplitude if key == "Right" else -amplitude
-        else:
-            step = self.angle_value(self.step_var, 0.1)
-            value = self.current_manual_angle + (step if key == "Right" else -step)
-        self.command_manual_angle(value, f"KEY_{key.upper()}_DOWN")
-        if self.mode_var.get() == "fine":
-            self.fine_repeat_key = key
-            self.cancel_fine_repeat(clear_key=False)
-            self.fine_repeat_job = self.after(
-                FINE_REPEAT_DELAY_MS, self.fine_repeat
-            )
+        self.repeat_key = key
+        self.cancel_repeat(clear_key=False)
+        self.step_angle(key, f"KEY_{key.upper()}_DOWN")
+        if key in self.pressed and self.manual_state == "ACTIVE":
+            self.repeat_job = self.after(KEY_REPEAT_DELAY_MS, self.repeat_angle)
         return "break"
 
     def key_up(self, event: tk.Event) -> str | None:
@@ -724,68 +838,47 @@ class BallDebugger(tk.Tk):
             return
         self.pressed.discard(key)
         self.recorder.event(f"KEY_{key.upper()}_UP")
-        if self.fine_repeat_key == key:
-            self.cancel_fine_repeat()
-        if self.mode_var.get() == "direct":
-            if "Right" in self.pressed:
-                value = self.angle_value(self.amplitude_var, 0.5)
-            elif "Left" in self.pressed:
-                value = -self.angle_value(self.amplitude_var, 0.5)
-            else:
-                value = 0.0
-            self.command_manual_angle(value, "KEY_RELEASE_TARGET")
+        if self.repeat_key == key:
+            self.cancel_repeat()
+            remaining = "Right" if "Right" in self.pressed else (
+                "Left" if "Left" in self.pressed else None
+            )
+            if remaining is not None:
+                self.repeat_key = remaining
+                self.repeat_job = self.after(KEY_REPEAT_MS, self.repeat_angle)
 
     def cancel_key_releases(self) -> None:
         for job in self.release_jobs.values():
             self.after_cancel(job)
         self.release_jobs.clear()
 
-    def fine_repeat(self) -> None:
-        self.fine_repeat_job = None
-        key = self.fine_repeat_key
-        if (self.mode_var.get() != "fine" or key not in self.pressed or
-                self.manual_state != "ACTIVE"):
-            self.fine_repeat_key = None
+    def repeat_angle(self) -> None:
+        self.repeat_job = None
+        key = self.repeat_key
+        if (key not in self.pressed or self.manual_state != "ACTIVE"):
+            self.repeat_key = None
             return
-        step = self.angle_value(self.step_var, 0.1)
-        value = self.current_manual_angle + (step if key == "Right" else -step)
-        self.command_manual_angle(value, f"KEY_{key.upper()}_REPEAT")
-        self.fine_repeat_job = self.after(FINE_REPEAT_MS, self.fine_repeat)
+        self.step_angle(key, f"KEY_{key.upper()}_REPEAT")
+        if self.repeat_key is not None and key in self.pressed:
+            self.repeat_job = self.after(KEY_REPEAT_MS, self.repeat_angle)
 
-    def cancel_fine_repeat(self, clear_key: bool = True) -> None:
-        if self.fine_repeat_job is not None:
-            self.after_cancel(self.fine_repeat_job)
-            self.fine_repeat_job = None
+    def cancel_repeat(self, clear_key: bool = True) -> None:
+        if self.repeat_job is not None:
+            self.after_cancel(self.repeat_job)
+            self.repeat_job = None
         if clear_key:
-            self.fine_repeat_key = None
-
-    def adjust_setting(self, direction: int) -> None:
-        if self.mode_var.get() == "direct":
-            value = self.angle_value(self.amplitude_var, 0.5) + 0.1 * direction
-            self.amplitude_var.set(
-                f"{max(0.1, min(PROTOCOL_ANGLE_LIMIT, value)):.1f}"
-            )
-            self.recorder.event("AMPLITUDE_CHANGE", self.amplitude_var.get())
-        else:
-            value = self.angle_value(self.step_var, 0.1) + 0.05 * direction
-            self.step_var.set(f"{max(0.1, min(1.0, value)):.2f}")
-            self.recorder.event("STEP_CHANGE", self.step_var.get())
-
-    def mode_changed(self) -> None:
-        self.pressed.clear()
-        self.cancel_key_releases()
-        self.cancel_fine_repeat()
-        if self.manual_active:
-            self.command_manual_angle(0.0, "MODE_CHANGE_ZERO")
-        self.recorder.event("MODE_CHANGE", self.mode_var.get())
+            self.repeat_key = None
 
     def focus_guard(self) -> None:
         focus_ok = self.focus_displayof() is not None
-        if (self.last_focus_ok and not focus_ok and self.manual_active and
-                (self.pressed or abs(self.current_manual_angle) > 0.0001)):
+        if self.last_focus_ok and not focus_ok and self.pressed:
             self.pressed.clear()
             self.cancel_key_releases()
-            self.command_manual_angle(0.0, "WINDOW_FOCUS_LOST_ZERO")
+            self.cancel_repeat()
+            self.recorder.event(
+                "WINDOW_FOCUS_LOST_HOLD",
+                f"target_deg={self.current_manual_angle:.3f}",
+            )
         self.last_focus_ok = focus_ok
         self.after(100, self.focus_guard)
 
@@ -798,8 +891,10 @@ class BallDebugger(tk.Tk):
     def manual_state_guard(self) -> None:
         if (self.manual_state == "STARTING" and
                 time.monotonic() >= self.manual_start_deadline):
+            self.auto_enable_allowed = False
+            self.auto_enable_after_zero = False
             self.set_manual_state(
-                "STOPPED", "启动超时：未收到MANUAL STARTED，请检查串口日志"
+                "STOPPED", "启动超时：未收到MANUAL STARTED，需确认重新启用"
             )
         self.after(100, self.manual_state_guard)
 

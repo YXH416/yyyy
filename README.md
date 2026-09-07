@@ -12,7 +12,7 @@
 当前MSPM0入口为 `mspm0/empty.c`，构建标识：
 
 ```text
-ROUND-043_KEYBOARD_MANUAL_V2
+ROUND-044_CUMULATIVE_KEYBOARD_V1
 ```
 
 当前为视觉标定与手动角度实验平台：上电不自动运动，VOFA FireWater每20ms显示球位置、球速度、电机目标角和实际角。通过UART0发送CAL、ANGLE、STOP等命令。
@@ -31,6 +31,8 @@ ROUND-041针对实测QEI反向计数符号错误，在重新建零后使用PB20�
 ROUND-042首次新增 [Windows键盘调试器](pc_tools/ball_keyboard_debugger/README.md)，支持方向键直接倾斜、松键回零、反向制动、实时健康状态、CSV数据与按键事件记录。当时的±2°/±2.3°限制已被下述ROUND-043取代。
 
 ROUND-043将相对平衡零点的手动协议范围扩展为±15°，正/负机械限位在motor_balance_config.h中独立配置并显示是否已实测。上位机新增明确的启动状态机、单串口发送队列、独立心跳、可控微调连发和收发序号诊断。
+
+ROUND-044将Windows键盘工具简化为唯一的“累加角度”模式：轻按方向键每次±1°，长按300 ms后每100 ms继续±1°，松开保持当前目标，空格才回平衡零点。连接并确认反馈正常后自动进入遥控待命；故障、通信超时或S停止后需要人工确认才能再启用。
 
 当前步骤见 [1 Hz单频正弦试扫](mspm0/SINE_SWEEP_1HZ.md)，VOFA接线见 [实验说明](mspm0/EXPERIMENT_STEP1.md)。
 

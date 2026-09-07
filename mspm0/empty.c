@@ -1,5 +1,5 @@
 /*
- * ROUND-043 -- sequenced keyboard manual control around measured balance zero.
+ * ROUND-044 -- cumulative-angle keyboard control around measured balance zero.
  * No automatic movement on boot; ANGLE commands explicitly move the motor.
  * PA17 remains a sequential calibration shortcut; PB7 stops the motor.
  */
@@ -15,7 +15,7 @@
 #include <stdio.h>
 #define printf Console_Printf
 
-#define BUILD_ID                         "ROUND-043_KEYBOARD_MANUAL_V2"
+#define BUILD_ID                         "ROUND-044_CUMULATIVE_KEYBOARD_V1"
 #define CONTROL_PERIOD_MS                (5U)
 #define K230_FRESH_MS                    (250U)
 #define SCALE_CAPTURE_SAMPLES            (12U)
