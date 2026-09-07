@@ -12,7 +12,7 @@
 当前MSPM0入口为 `mspm0/empty.c`，构建标识：
 
 ```text
-ROUND-041_PWM_SINE_1HZ_V1
+ROUND-042_KEYBOARD_MANUAL_V1
 ```
 
 当前为视觉标定与手动角度实验平台：上电不自动运动，VOFA FireWater每20ms显示球位置、球速度、电机目标角和实际角。通过UART0发送CAL、ANGLE、STOP等命令。
@@ -27,6 +27,8 @@ ROUND-041_PWM_SINE_1HZ_V1
 ROUND-040将命令超时与闭环active状态分离；BALANCE,ZERO到位后停止校正脉冲并解除旧超时，已处于±0.30°内时直接返回mode=NO_MOTION。
 
 ROUND-041针对实测QEI反向计数符号错误，在重新建零后使用PB20绝对PWM作为电机位置闭环反馈。新增SINE,START：固定1.0 Hz、±1.3°、8秒单频正弦试扫，具有球位置±40 mm、电机实际角±2°和视觉丢失保护。
+
+ROUND-042新增 [Windows键盘调试器](pc_tools/ball_keyboard_debugger/README.md)，支持方向键直接倾斜、松键回零、反向制动、实时健康状态、CSV数据与按键事件记录。固件通过±2°双重限幅、±2.3°实际角限制和500 ms心跳超时回零保护手动控制。
 
 当前步骤见 [1 Hz单频正弦试扫](mspm0/SINE_SWEEP_1HZ.md)，VOFA接线见 [实验说明](mspm0/EXPERIMENT_STEP1.md)。
 

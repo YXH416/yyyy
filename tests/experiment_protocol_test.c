@@ -44,6 +44,15 @@ int main(void)
     assert(Feed(&p, "SINE,START\r\n", 1).type == EXP_SINE_START);
     assert(Feed(&p, "SINE,STATUS\n", 1).type == EXP_SINE_STATUS);
     assert(Feed(&p, "SINE,1.0\n", 1).type == EXP_INVALID);
+    assert(Feed(&p, "manual,start\n", 1).type == EXP_MANUAL_START);
+    assert(Feed(&p, "MANUAL,HEARTBEAT\n", 1).type == EXP_MANUAL_HEARTBEAT);
+    assert(Feed(&p, "MANUAL,STOP\n", 1).type == EXP_MANUAL_STOP);
+    c = Feed(&p, "MANUAL,ANGLE,-1.50\n", 1);
+    assert(c.type == EXP_MANUAL_ANGLE && c.angle_deg == -1.5f);
+    assert(Feed(&p, "MANUAL,ANGLE,2.0\n", 1).type == EXP_MANUAL_ANGLE);
+    assert(Feed(&p, "MANUAL,ANGLE,-2.0\n", 1).type == EXP_MANUAL_ANGLE);
+    assert(Feed(&p, "MANUAL,ANGLE,2.01\n", 1).type == EXP_INVALID);
+    assert(Feed(&p, "MANUAL,ANGLE,nan\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "JOG,+10\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "JOG,-1junk\n", 1).type == EXP_INVALID);
     c = Feed(&p, "ANGLE,31.25\n", 1);

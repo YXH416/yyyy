@@ -17,6 +17,7 @@ __pycache__/
 *.py[cod]
 *.log
 *.bak
+pc_tools/ball_keyboard_debugger/records/
 
 # Local editor and operating-system files
 .vscode/

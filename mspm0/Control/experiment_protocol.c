@@ -39,6 +39,17 @@ static ExperimentCommand Parse(char *line)
     else if (strcmp(line, "FAULT,CLEAR") == 0) command.type = EXP_FAULT_CLEAR;
     else if (strcmp(line, "SINE,START") == 0) command.type = EXP_SINE_START;
     else if (strcmp(line, "SINE,STATUS") == 0) command.type = EXP_SINE_STATUS;
+    else if (strcmp(line, "MANUAL,START") == 0) command.type = EXP_MANUAL_START;
+    else if (strcmp(line, "MANUAL,HEARTBEAT") == 0) command.type = EXP_MANUAL_HEARTBEAT;
+    else if (strcmp(line, "MANUAL,STOP") == 0) command.type = EXP_MANUAL_STOP;
+    else if (strncmp(line, "MANUAL,ANGLE,", 13) == 0) {
+        angle = strtof(line + 13, &end);
+        if (end != line + 13 && *end == '\0' &&
+            angle >= -2.0f && angle <= 2.0f) {
+            command.type = EXP_MANUAL_ANGLE;
+            command.angle_deg = angle;
+        }
+    }
     else if (strncmp(line, "ANGLE,", 6) == 0) {
         /* Consume the entire numeric token. NaN/Inf/overflow cannot pass. */
         angle = strtof(line + 6, &end);

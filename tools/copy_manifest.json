@@ -12,5 +12,9 @@
   {"source": "mspm0/BALANCE_REFERENCE_RECORD.md", "target": "mspm0/BALANCE_REFERENCE_RECORD.md"},
   {"source": "mspm0/BREAKAWAY_MEASUREMENT.md", "target": "mspm0/BREAKAWAY_MEASUREMENT.md"},
   {"source": "mspm0/SINE_SWEEP_1HZ.md", "target": "mspm0/SINE_SWEEP_1HZ.md"},
+  {"source": "pc_tools/ball_keyboard_debugger/app.py", "target": "pc_tools/ball_keyboard_debugger/app.py"},
+  {"source": "pc_tools/ball_keyboard_debugger/README.md", "target": "pc_tools/ball_keyboard_debugger/README.md"},
+  {"source": "pc_tools/ball_keyboard_debugger/requirements.txt", "target": "pc_tools/ball_keyboard_debugger/requirements.txt"},
+  {"source": "pc_tools/ball_keyboard_debugger/run.bat", "target": "pc_tools/ball_keyboard_debugger/run.bat"},
   {"source": "tools/COPY_INSTRUCTIONS.md", "target": "使用说明.md"}
 ]

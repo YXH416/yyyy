@@ -17,6 +17,7 @@
 #define CL_MAX_BURST_STEPS  ((8U * D36A_MICROSTEP) / 16U)
 /* 故障阈值：累计64脉冲不动判无反馈；累计64反向脉冲判方向错误。 */
 #define CL_CHECK_STEP_LIMIT 64U
+#define CL_PWM_CHECK_STEP_LIMIT 256U
 #define CL_QEI_MOVE_CONFIRM       2
 #define CL_PWM_MOVE_CONFIRM       1
 #define CL_PWM_FALLBACK_CONFIRM   2
@@ -210,7 +211,10 @@ static uint8_t CL_CheckFeedback(int32_t current)
         if (s_cl.reverse_steps >= CL_REVERSE_LIMIT) CL_SetFault(CL_FAULT_DIRECTION);
         return 0U;
     }
-    if (s_cl.check_steps >= CL_CHECK_STEP_LIMIT) CL_SetFault(CL_FAULT_NO_ENCODER);
+    if (s_cl.check_steps >= ((s_cl.feedback_source == CL_FEEDBACK_PWM) ?
+                            CL_PWM_CHECK_STEP_LIMIT : CL_CHECK_STEP_LIMIT)) {
+        CL_SetFault(CL_FAULT_NO_ENCODER);
+    }
     return 0U;
 }
 
@@ -418,4 +422,3 @@ void CL_GetSnapshot(MotorAxis_t axis, CL_Snapshot_t *snapshot)
         ENCODER_AXIS_X, &pwm_angle);
     snapshot->pwm_angle_deg = pwm_angle;
 }
-
