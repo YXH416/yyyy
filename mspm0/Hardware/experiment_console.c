@@ -17,6 +17,8 @@ static volatile uint32_t s_rx_errors;
 static volatile uint32_t s_rx_overflows;
 static volatile uint32_t s_rx_bytes;
 static volatile uint32_t s_rx_error_bits;
+static uint32_t s_last_loss_report_ms;
+static uint8_t s_loss_report_pending;
 static uint32_t s_rx_lines;
 static char s_tx[TX_SIZE];
 static uint16_t s_tx_read, s_tx_write;
@@ -53,9 +55,22 @@ void UART_0_INST_IRQHandler(void)
     }
 }
 
-int Console_TakeCommand(ExperimentCommand *command)
+int Console_TakeCommand(ExperimentCommand *command, uint32_t now_ms)
 {
     unsigned budget = RX_SIZE;
+    if (s_loss_report_pending &&
+        (uint32_t)(now_ms - s_last_loss_report_ms) >= 500U) {
+        s_loss_report_pending = 0U;
+        s_last_loss_report_ms = now_ms;
+        Console_Printf("[ERR] RX_LOST hw_errors=%lu overflow=%lu bits=0x%lx "
+                       "framing=%u break=%u overrun=%u resend_after_newline\r\n",
+                       (unsigned long)s_rx_errors,
+                       (unsigned long)s_rx_overflows,
+                       (unsigned long)s_rx_error_bits,
+                       !!(s_rx_error_bits & DL_UART_MAIN_INTERRUPT_FRAMING_ERROR),
+                       !!(s_rx_error_bits & DL_UART_MAIN_INTERRUPT_BREAK_ERROR),
+                       !!(s_rx_error_bits & DL_UART_MAIN_INTERRUPT_OVERRUN_ERROR));
+    }
     while (budget--) {
         uint32_t mask = __get_PRIMASK();
         uint8_t byte;
@@ -66,10 +81,7 @@ int Console_TakeCommand(ExperimentCommand *command)
             s_bad_rx = 0;
             if (!mask) __enable_irq();
             ExperimentParser_Discard(&s_parser);
-            Console_Printf("[ERR] RX_LOST hw_errors=%lu overflow=%lu bits=0x%lx resend_after_newline\r\n",
-                           (unsigned long)s_rx_errors,
-                           (unsigned long)s_rx_overflows,
-                           (unsigned long)s_rx_error_bits);
+            s_loss_report_pending = 1U;
             return 0;
         }
         if (s_read == s_write) {

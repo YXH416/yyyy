@@ -15,7 +15,7 @@
 #include <stdio.h>
 #define printf Console_Printf
 
-#define BUILD_ID                         "ROUND-045_REMOTE_RX_RECOVERY_V1"
+#define BUILD_ID                         "ROUND-046_RX_STORM_FIX_V1"
 #define CONTROL_PERIOD_MS                (5U)
 #define K230_FRESH_MS                    (250U)
 #define SCALE_CAPTURE_SAMPLES            (12U)
@@ -1341,7 +1341,7 @@ int main(void)
                 FinishSine(now, "VISION_LOST");
         }
 
-        if (Console_TakeCommand(&command)) HandleCommand(command, now);
+        if (Console_TakeCommand(&command, now)) HandleCommand(command, now);
         if (now - last_control >= CONTROL_PERIOD_MS) {
             last_control = now;
             CL_GetSnapshot(MOTOR_AXIS_X, &motor);

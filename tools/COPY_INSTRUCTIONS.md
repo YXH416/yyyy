@@ -1,4 +1,6 @@
-# 当前复制包：ROUND-045 遥控启动与RX_LOST修正
+# 当前复制包：ROUND-046 接收错误风暴修正
+
+本轮必须一起覆盖app.py、mspm0/empty.c、mspm0/Hardware/experiment_console.c及experiment_console.h。删除RX_LOST逐条触发STATUS的请求风暴，限制日志处理时间并记录心跳。详细原因和实机验证见pc_tools/ball_keyboard_debugger/ROUND046_FIX.md。启动标识为ROUND-046_RX_STORM_FIX_V1。以下为历史改动说明。
 
 本轮必须同时更新pc_tools/ball_keyboard_debugger/app.py、mspm0/empty.c、mspm0/Hardware/experiment_console.c。修正启动时RX_LOST导致心跳停止的问题，显式开启UART FIFO，并细分接收错误日志。删除目标位置控件；松键保持当前目标。实机问题若继续出现，请记录MANUAL STARTED之后的完整日志和STATUS。详情见Python目录ROUND045_FIX.md。
 

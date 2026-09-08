@@ -1,4 +1,4 @@
-"""ROUND-045 cumulative-angle controller with startup heartbeat recovery."""
+"""ROUND-046 bounded console processing; no error-triggered transmit storm."""
 
 from __future__ import annotations
 
@@ -206,7 +206,7 @@ class Recorder:
 class BallDebugger(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("平衡球键盘调试器 · ROUND-045")
+        self.title("平衡球键盘调试器 · ROUND-046")
         self.geometry("980x720")
         self.minsize(860, 650)
         self.inbox: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -226,6 +226,9 @@ class BallDebugger(tk.Tk):
         self.auto_enable_allowed = False
         self.auto_enable_after_zero = False
         self.zero_request_pending = False
+        self.zero_deadline = 0.0
+        self.last_rx_warning = 0.0
+        self.rx_loss_count = 0
         self.firmware_command_limit = PROTOCOL_ANGLE_LIMIT
         self.mechanical_pos_limit = PROTOCOL_ANGLE_LIMIT
         self.mechanical_neg_limit = PROTOCOL_ANGLE_LIMIT
@@ -407,20 +410,24 @@ class BallDebugger(tk.Tk):
         return True
 
     def process_inbox(self) -> None:
+        deadline = time.monotonic() + 0.008
         try:
-            while True:
+            # Bound each GUI callback so errors cannot starve keys/timers.
+            for _ in range(100):
+                if time.monotonic() >= deadline:
+                    break
                 kind, payload = self.inbox.get_nowait()
                 if kind == "line":
                     self.process_line(str(payload))
                 elif kind == "tx":
                     sequence, wire, queued_ns, sent_ns = payload
+                    delay_ms = (sent_ns - queued_ns) / 1_000_000
+                    self.recorder.event(
+                        "TX", f"seq={sequence} queue_ms={delay_ms:.1f} {wire}"
+                    )
                     if not str(wire).startswith("MANUAL,HEARTBEAT"):
-                        delay_ms = (sent_ns - queued_ns) / 1_000_000
                         self.append_log(
                             f"[TX] seq={sequence} queue_ms={delay_ms:.1f} {wire}"
-                        )
-                        self.recorder.event(
-                            "TX", f"seq={sequence} queue_ms={delay_ms:.1f} {wire}"
                         )
                 elif kind == "tx_error":
                     self.append_log(f"[PC] {payload}")
@@ -510,11 +517,21 @@ class BallDebugger(tk.Tk):
             self.set_manual_state("FAULT", line)
         elif line.startswith("[ERR]"):
             if "RX_LOST" in line:
-                # Loss of one command does not mean MANUAL has exited. Keep
-                # the heartbeat alive while STATUS confirms the MCU state.
-                self.append_log(line)
+                # Never respond per error: that forms a STATUS/error feedback
+                # loop. The independent 1 Hz poll already queries MCU state.
+                self.rx_loss_count += 1
                 self.recorder.event("RX_LOST", line)
-                self.send("STATUS", priority=0)
+                now = time.monotonic()
+                if now - self.last_rx_warning >= 1.0:
+                    self.last_rx_warning = now
+                    self.append_log(line)
+                    self.manual_detail_label.configure(
+                        text="串口接收错误：正在等待主控状态，检查TX→PA11及共地"
+                    )
+                return
+            if "BAD_COMMAND_OR_RANGE" in line:
+                self.recorder.event("RX", line)
+                # A malformed frame is not an acknowledgement of START failure.
                 return
             if "fault" in fields:
                 self.fault = fields["fault"]
@@ -749,6 +766,7 @@ class BallDebugger(tk.Tk):
         self.auto_enable_allowed = True
         self.auto_enable_after_zero = True
         self.zero_request_pending = True
+        self.zero_deadline = time.monotonic() + 12.0
         self.ignore_manual_started = True
         self.set_manual_state("ZEROING", "正在回平衡零点……")
         self.send("BALANCE,ZERO")
@@ -884,6 +902,10 @@ class BallDebugger(tk.Tk):
                 self.link.send("MANUAL,HEARTBEAT", priority=0)
 
     def manual_state_guard(self) -> None:
+        if (self.manual_state == "ZEROING" and self.zero_request_pending
+                and time.monotonic() >= self.zero_deadline):
+            self.stop_manual()
+            self.set_manual_state("STOPPED", "回零确认超时：已请求停止，请检查串口和STATUS")
         if (self.manual_state == "STARTING" and
                 time.monotonic() >= self.manual_start_deadline):
             self.auto_enable_allowed = False

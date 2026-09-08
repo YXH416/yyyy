@@ -5,7 +5,7 @@
 void Console_Init(void);
 int Console_Printf(const char *format, ...);
 void Console_DrainTx(void);
-int Console_TakeCommand(ExperimentCommand *command);
+int Console_TakeCommand(ExperimentCommand *command, uint32_t now_ms);
 uint32_t Console_GetRxErrors(void);
 uint32_t Console_GetRxOverflows(void);
 uint32_t Console_GetRxBytes(void);

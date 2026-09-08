@@ -14,10 +14,12 @@ py -3 app.py
 对应固件构建标识：
 
 ```text
-ROUND-045_REMOTE_RX_RECOVERY_V1
+ROUND-046_RX_STORM_FIX_V1
 ```
 
 ## 快速使用
+
+第46轮修正RX_LOST引起的STATUS请求风暴，详细日志结论和复制步骤见 [第46轮修正](ROUND046_FIX.md)。
 
 第45轮修正启动期间RX_LOST导致停发心跳的问题，删除目标位置设置。请同时覆盖Python与主控串口文件，详见 [本轮修正](ROUND045_FIX.md)。
 
