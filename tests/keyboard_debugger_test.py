@@ -1,113 +1,106 @@
-"""Headless regression for startup RX loss and cumulative key release."""
+"""Headless regression for the ROUND-047 minimal keyboard remote."""
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-import queue
-from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
-    "debugger", Path(__file__).parents[1] / "pc_tools/ball_keyboard_debugger/app.py")
+    "remote", Path(__file__).parents[1] / "pc_tools/ball_keyboard_debugger/app.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
 class Harness:
-    process_line = module.BallDebugger.process_line
-    step_angle = module.BallDebugger.step_angle
-    commit_key_up = module.BallDebugger.commit_key_up
-    start_manual = module.BallDebugger.start_manual
+    step_angle = module.BallRemote.step_angle
+    send_relative = module.BallRemote.send_relative
+    commit_key_up = module.BallRemote.commit_key_up
+    process_line = module.BallRemote.process_line
 
     def __init__(self):
-        self.manual_state = "STARTING"
-        self.auto_enable_allowed = True
-        self.rx_loss_count = 0
-        self.last_rx_warning = float("inf")
+        self.target_angle = 0.0
+        self.actual_angle = None
         self.sent = []
-        self.recorder = SimpleNamespace(event=lambda *args: None)
-        self.append_log = lambda *args: None
-        self.send = lambda command, **kwargs: self.sent.append(command)
-        self.current_manual_angle = 12.0
-        self.mechanical_pos_limit = 15.0
-        self.mechanical_neg_limit = 7.0
-        self.firmware_command_limit = 15.0
+        self.pressed = set()
         self.release_jobs = {}
-        self.pressed = {"Right"}
-        self.repeat_key = "Right"
-
-    def cancel_repeat(self):
         self.repeat_key = None
+        self.repeat_job = None
+        self.link = SimpleNamespace(connected=True)
+        self.link.send = lambda cmd: (self.sent.append(cmd), True)[1]
+        self.update_display = lambda: None
 
-    def command_manual_angle(self, value, event):
-        self.sent.append(value)
-        self.current_manual_angle = value
+    def send(self, command):
+        return self.link.send(command)
+
+    def cancel_repeat(self, clear_key=True):
+        self.repeat_job = None
+        if clear_key:
+            self.repeat_key = None
+
+    def after(self, ms, fn):
+        return f"job-{ms}"
 
 
 class Regression(unittest.TestCase):
-    def test_inbox_flood_returns_control_to_gui(self):
+    def test_right_increments_and_commands(self):
         h = Harness()
-        h.inbox = queue.Queue()
-        for _ in range(1000):
-            h.inbox.put(("line", "noise"))
-        processed, scheduled = [], []
-        h.process_line = processed.append
-        h.process_inbox = lambda: None
-        h.after = lambda *args: scheduled.append(args)
-        with patch.object(module.time, "monotonic", return_value=0.0):
-            module.BallDebugger.process_inbox(h)
-        self.assertEqual(len(processed), 100)
-        self.assertEqual(h.inbox.qsize(), 900)
-        self.assertEqual(scheduled[0][0], 20)
+        h.step_angle("Right")
+        self.assertEqual(h.target_angle, 1.0)
+        self.assertEqual(h.sent, ["ANGLE_REL,+1.0"])
 
-    def test_zero_confirmation_timeout_requests_stop(self):
+    def test_left_decrements_and_commands(self):
         h = Harness()
-        h.manual_state = "ZEROING"
-        h.zero_request_pending = True
-        h.zero_deadline = -1.0
-        stopped = []
-        h.stop_manual = lambda: stopped.append(True)
-        h.set_manual_state = lambda state, detail: setattr(h, "manual_state", state)
-        h.manual_state_guard = lambda: None
-        h.after = lambda *args: None
-        module.BallDebugger.manual_state_guard(h)
-        self.assertEqual(stopped, [True])
-        self.assertEqual(h.manual_state, "STOPPED")
+        h.target_angle = 2.0
+        h.step_angle("Left")
+        self.assertEqual(h.target_angle, 1.0)
+        self.assertEqual(h.sent, ["ANGLE_REL,+1.0"])
 
-    def test_rx_loss_does_not_cancel_start_or_heartbeat_state(self):
+    def test_upper_limit_blocks_and_stops_repeat(self):
         h = Harness()
-        for _ in range(8406):
-            h.process_line("[ERR] RX_LOST resend_after_newline")
-        self.assertEqual(h.manual_state, "STARTING")
-        self.assertTrue(h.auto_enable_allowed)
+        h.target_angle = 15.0
+        h.repeat_key = "Right"
+        h.step_angle("Right")
+        self.assertEqual(h.target_angle, 15.0)
         self.assertEqual(h.sent, [])
-        self.assertEqual(h.rx_loss_count, 8406)
-
-    def test_corrupt_frame_is_not_start_failure(self):
-        h = Harness()
-        h.process_line("[ERR] BAD_COMMAND_OR_RANGE use_HELP")
-        self.assertEqual(h.manual_state, "STARTING")
-        self.assertEqual(h.sent, [])
-
-    def test_release_holds_without_zero_command(self):
-        h = Harness()
-        h.commit_key_up("Right")
-        h.commit_key_up("Right")
-        self.assertEqual(h.sent, [])
-        self.assertEqual(h.current_manual_angle, 12.0)
         self.assertIsNone(h.repeat_key)
 
-    def test_asymmetric_limit_reverse_is_one_degree(self):
+    def test_lower_limit_blocks(self):
         h = Harness()
-        h.step_angle("Left", "test")
-        self.assertEqual(h.sent, [11.0])
-        for _ in range(40):
-            h.step_angle("Left", "test")
-        self.assertEqual(h.current_manual_angle, -7.0)
+        h.target_angle = -15.0
+        h.step_angle("Left")
+        self.assertEqual(h.target_angle, -15.0)
+        self.assertEqual(h.sent, [])
 
-    def test_stop_cancels_delayed_auto_restart(self):
+    def test_release_holds_target_without_zero(self):
         h = Harness()
-        h.auto_enable_allowed = False
-        h.start_manual()
+        h.target_angle = 12.0
+        h.pressed = {"Right"}
+        h.repeat_key = "Right"
+        h.commit_key_up("Right")
+        h.commit_key_up("Right")
+        self.assertEqual(h.sent, [])
+        self.assertEqual(h.target_angle, 12.0)
+        self.assertIsNone(h.repeat_key)
+
+    def test_status_parses_actual_angle(self):
+        h = Harness()
+        h.process_line("[STATUS] ms=1 motor_deg=3.25 fault=NONE fb=PWM")
+        self.assertEqual(h.actual_angle, 3.25)
+
+    def test_status_invalid_actual_angle_is_none(self):
+        h = Harness()
+        h.process_line("[STATUS] ms=1 motor_deg=-9999.00 fault=NO_ENCODER")
+        self.assertIsNone(h.actual_angle)
+
+    def test_relative_command_format(self):
+        h = Harness()
+        h.send_relative(3.0)
+        h.send_relative(-2.0)
+        self.assertEqual(h.sent, ["ANGLE_REL,+3.0", "ANGLE_REL,-2.0"])
+
+    def test_relative_not_sent_when_disconnected(self):
+        h = Harness()
+        h.link.connected = False
+        h.send_relative(3.0)
         self.assertEqual(h.sent, [])
 
 

@@ -1,6 +1,10 @@
-# 当前复制包：ROUND-046 接收错误风暴修正
+# 当前复制包：ROUND-047 最小遥控版
 
-本轮必须一起覆盖app.py、mspm0/empty.c、mspm0/Hardware/experiment_console.c及experiment_console.h。删除RX_LOST逐条触发STATUS的请求风暴，限制日志处理时间并记录心跳。详细原因和实机验证见pc_tools/ball_keyboard_debugger/ROUND046_FIX.md。启动标识为ROUND-046_RX_STORM_FIX_V1。以下为历史改动说明。
+本轮把键盘调试器砍成最小遥控，只保留相对平衡零点的加角度、减角度、回平衡零点。必须一起覆盖：pc_tools/ball_keyboard_debugger/app.py、pc_tools/ball_keyboard_debugger/README.md、mspm0/empty.c、mspm0/Control/experiment_protocol.c、mspm0/Control/experiment_protocol.h。固件新增 `ANGLE_REL,-15..15` 相对角命令（复用现有相对零点逻辑，不需要 MANUAL,START/心跳），旧 `ANGLE,24..40` 绝对坐标不再使用。启动标识为 ROUND-047_MINIMAL_REMOTE_V1。详细说明见 pc_tools/ball_keyboard_debugger/ROUND047_FIX.md。
+
+以下为历史改动说明。
+
+ROUND-046 接收错误风暴修正：一起覆盖app.py、mspm0/empty.c、mspm0/Hardware/experiment_console.c及experiment_console.h。删除RX_LOST逐条触发STATUS的请求风暴，限制日志处理时间并记录心跳。详细原因和实机验证见pc_tools/ball_keyboard_debugger/ROUND046_FIX.md。
 
 本轮必须同时更新pc_tools/ball_keyboard_debugger/app.py、mspm0/empty.c、mspm0/Hardware/experiment_console.c。修正启动时RX_LOST导致心跳停止的问题，显式开启UART FIFO，并细分接收错误日志。删除目标位置控件；松键保持当前目标。实机问题若继续出现，请记录MANUAL STARTED之后的完整日志和STATUS。详情见Python目录ROUND045_FIX.md。
 

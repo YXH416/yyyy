@@ -56,6 +56,15 @@ static ExperimentCommand Parse(char *line)
     else if (strcmp(line, "CAL,BALANCE") == 0) command.type = EXP_BALANCE_CAL;
     else if (strcmp(line, "BALANCE,SHOW") == 0) command.type = EXP_BALANCE_SHOW;
     else if (strcmp(line, "BALANCE,ZERO") == 0) command.type = EXP_BALANCE_ZERO;
+    else if (strncmp(line, "ANGLE_REL,", 10) == 0) {
+        /* Minimal remote: target relative to balance zero, +/-15 deg only. */
+        angle = strtof(line + 10, &end);
+        if (end != line + 10 && *end == '\0' &&
+            angle >= -15.0f && angle <= 15.0f) {
+            command.type = EXP_ANGLE_REL;
+            command.angle_deg = angle;
+        }
+    }
     else if (strcmp(line, "BREAKAWAY,POS") == 0) command.type = EXP_BREAKAWAY_POS;
     else if (strcmp(line, "BREAKAWAY,NEG") == 0) command.type = EXP_BREAKAWAY_NEG;
     else if (strcmp(line, "BREAKAWAY,STATUS") == 0) command.type = EXP_BREAKAWAY_STATUS;

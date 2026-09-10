@@ -6,7 +6,8 @@ $repo = [IO.Path]::GetFullPath((Split-Path $PSScriptRoot -Parent))
 $bundleName = -join ([char[]](0x5F85,0x590D,0x5236,0x6587,0x4EF6))
 $destination = Join-Path (Split-Path $repo -Parent) $bundleName
 $manifestPath = Join-Path $PSScriptRoot 'copy_manifest.json'
-$entries = @(Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json)
+$parsed = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$entries = @($parsed)
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
 $destination = (Resolve-Path -LiteralPath $destination).Path
 function ResolveChild([string]$base, [string]$relative) {
@@ -28,7 +29,8 @@ foreach ($entry in $entries) {
 $listName = (-join ([char[]](0x6E05,0x5355))) + '.json'
 $oldManifest = Join-Path $destination $listName
 if (Test-Path -LiteralPath $oldManifest -PathType Leaf) {
-    $oldEntries = @(Get-Content -LiteralPath $oldManifest -Raw -Encoding UTF8 | ConvertFrom-Json)
+    $oldParsed = Get-Content -LiteralPath $oldManifest -Raw -Encoding UTF8 | ConvertFrom-Json
+    $oldEntries = @($oldParsed)
     foreach ($entry in $oldEntries) {
         if ($entries.target -notcontains $entry.target) {
             $obsolete = ResolveChild $destination $entry.target

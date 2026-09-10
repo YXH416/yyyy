@@ -61,6 +61,14 @@ int main(void)
     assert(Feed(&p, "MANUAL,ANGLE,15.01\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "MANUAL,ANGLE,1.0,BOGUS\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "MANUAL,ANGLE,nan\n", 1).type == EXP_INVALID);
+    c = Feed(&p, "ANGLE_REL,+3.0\n", 1);
+    assert(c.type == EXP_ANGLE_REL && c.angle_deg == 3.0f);
+    c = Feed(&p, "angle_rel,-2.0\n", 1);
+    assert(c.type == EXP_ANGLE_REL && c.angle_deg == -2.0f);
+    assert(Feed(&p, "ANGLE_REL,-15.0\n", 1).type == EXP_ANGLE_REL);
+    assert(Feed(&p, "ANGLE_REL,15.0\n", 1).type == EXP_ANGLE_REL);
+    assert(Feed(&p, "ANGLE_REL,15.01\n", 1).type == EXP_INVALID);
+    assert(Feed(&p, "ANGLE_REL,nan\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "JOG,+10\n", 1).type == EXP_INVALID);
     assert(Feed(&p, "JOG,-1junk\n", 1).type == EXP_INVALID);
     c = Feed(&p, "ANGLE,31.25\n", 1);

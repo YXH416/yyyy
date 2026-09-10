@@ -15,7 +15,7 @@
 #include <stdio.h>
 #define printf Console_Printf
 
-#define BUILD_ID                         "ROUND-046_RX_STORM_FIX_V1"
+#define BUILD_ID                         "ROUND-047_MINIMAL_REMOTE_V1"
 #define CONTROL_PERIOD_MS                (5U)
 #define K230_FRESH_MS                    (250U)
 #define SCALE_CAPTURE_SAMPLES            (12U)
@@ -1129,6 +1129,68 @@ static void ManualAngle(float requested, uint32_t sequence, uint32_t now)
            (unsigned long)sequence, requested, actual);
 }
 
+/* Minimal remote: command a balance-relative target without the manual mode
+ * state machine, heartbeat or link watchdog. The inner-loop zero is anchored
+ * once at the first command; afterwards the +/-15 deg target is applied
+ * directly. Feedback loss stays protected by CL_FAULT_NO_ENCODER / PWM_LOST. */
+static void RelativeAngle(float requested, uint32_t now)
+{
+    float pwm, actual;
+    CL_Snapshot_t motor;
+    if (!s_balance_valid) {
+        printf("[ERR] REL_NO_BALANCE_ZERO use_CAL_BALANCE\r\n");
+        return;
+    }
+    if (AbsFloat(requested) > MANUAL_ANGLE_LIMIT_DEG) {
+        printf("[ERR] REL_COMMAND_LIMIT requested_deg=%.3f limit_deg=%.1f\r\n",
+               requested, MANUAL_ANGLE_LIMIT_DEG);
+        return;
+    }
+    actual = MotorRealAngle();
+    if (actual == INVALID_MEASUREMENT ||
+        CL_GetFault(MOTOR_AXIS_X) != CL_FAULT_NONE) {
+        StopExperiment(now, "REL_FEEDBACK_INVALID");
+        return;
+    }
+    /* Refuse a first large jump: the shaft must already be inside the command
+     * envelope. Outside it, the operator should send BALANCE,ZERO first. */
+    if (AbsFloat(actual) > MANUAL_ANGLE_LIMIT_DEG) {
+        printf("[ERR] REL_NOT_AT_ZERO actual_deg=%.3f send_BALANCE_ZERO\r\n",
+               actual);
+        return;
+    }
+    if (!s_motor_reference_valid) {
+        CL_GetSnapshot(MOTOR_AXIS_X, &motor);
+        if (Motor_IsBusy(MOTOR_AXIS_X) || (motor.active && !motor.reached)) {
+            printf("[ERR] REL_MOTOR_MOVING wait_then_retry\r\n");
+            return;
+        }
+        if (!Encoder_GetPwmAngle(ENCODER_AXIS_X, &pwm)) {
+            printf("[ERR] REL_PWM_INVALID inspect_PB20_and_GND\r\n");
+            return;
+        }
+        EnterMeasurement(pwm);
+        CL_GetSnapshot(MOTOR_AXIS_X, &motor);
+        if (!motor.pwm_valid || motor.feedback_source != CL_FEEDBACK_PWM) {
+            CL_StopAll();
+            printf("[ERR] REL_REQUIRES_PWM_FEEDBACK pwm_valid=%u fb=%s\r\n",
+                   (unsigned)motor.pwm_valid,
+                   (motor.feedback_source == CL_FEEDBACK_PWM) ? "PWM" : "QEI");
+            return;
+        }
+    }
+    if (CL_SetTargetAngle(MOTOR_AXIS_X,
+                          requested - s_motor_origin_deg) != MOTOR_OK) {
+        StopExperiment(now, "REL_TARGET_REJECTED");
+        return;
+    }
+    s_motor_target_deg = requested;
+    s_motor_command_ms = now;
+    s_motor_timeout_armed = 1;
+    printf("[REL] ms=%lu event=ANGLE target_deg=%.3f actual_deg=%.3f\r\n",
+           (unsigned long)now, requested, actual);
+}
+
 static void ManualHeartbeat(uint32_t sequence, uint32_t now)
 {
     if (s_manual_active) {
@@ -1179,6 +1241,7 @@ static void PrintHelp(void)
     printf("[HELP] ANGLE,31 (24..40 deg) | STOP | STATUS | HELP\r\n");
     printf("[HELP] JOG,+1 | JOG,-1 | CAL,BALANCE | BALANCE,SHOW\r\n");
     printf("[HELP] BALANCE,ZERO returns_motor_to_saved_balance_pose\r\n");
+    printf("[HELP] ANGLE_REL,-15.0..15.0 sets_target_relative_to_balance_zero\r\n");
     printf("[HELP] BREAKAWAY,POS | BREAKAWAY,NEG | BREAKAWAY,STATUS\r\n");
     printf("[HELP] FAULT,CLEAR | SINE,START | SINE,STATUS\r\n");
     printf("[HELP] MANUAL,START[,SEQ] | MANUAL,ANGLE,-15..15[,SEQ] | "
@@ -1206,6 +1269,7 @@ static void HandleCommand(ExperimentCommand command, uint32_t now)
     case EXP_BALANCE_CAL: StartBalanceCapture(now); break;
     case EXP_BALANCE_SHOW: PrintBalance(); break;
     case EXP_BALANCE_ZERO: ReturnToBalanceZero(now); break;
+    case EXP_ANGLE_REL: RelativeAngle(command.angle_deg, now); break;
     case EXP_BREAKAWAY_POS: StartBreakaway(1, now); break;
     case EXP_BREAKAWAY_NEG: StartBreakaway(-1, now); break;
     case EXP_BREAKAWAY_STATUS: PrintBreakawayStatus(now); break;

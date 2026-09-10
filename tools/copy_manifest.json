@@ -1,5 +1,6 @@
 [
   {"source": "pc_tools/ball_keyboard_debugger/ROUND046_FIX.md", "target": "pc_tools/ball_keyboard_debugger/ROUND046_FIX.md"},
+  {"source": "pc_tools/ball_keyboard_debugger/ROUND047_FIX.md", "target": "pc_tools/ball_keyboard_debugger/ROUND047_FIX.md"},
   {"source": "pc_tools/ball_keyboard_debugger/ROUND045_FIX.md", "target": "pc_tools/ball_keyboard_debugger/ROUND045_FIX.md"},
   {"source": "mspm0/empty.c", "target": "mspm0/empty.c"},
   {"source": "mspm0/empty.syscfg", "target": "mspm0/empty.syscfg"},
